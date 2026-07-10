@@ -1,0 +1,57 @@
+name: Build Windows EXE
+
+# يشتغل عند: push على main، أو إنشاء تاج إصدار (v*)، أو تشغيل يدوي من تبويب Actions
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # مطلوبة عشان ننشئ Release ونرفع الـ exe عليه
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller build.spec
+
+      - name: Rename output with version tag
+        shell: bash
+        run: |
+          mkdir -p dist_final
+          if [ -f "dist/PDF_Master_Pro.exe" ]; then
+            cp "dist/PDF_Master_Pro.exe" "dist_final/PDF_Master_Pro.exe"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF_Master_Pro-windows-exe
+          path: dist_final/PDF_Master_Pro.exe
+          retention-days: 30
+
+      # لو الـ push كان بتاج (زي v29.1) هيتعمل Release تلقائي على GitHub بالـ exe مرفق
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist_final/PDF_Master_Pro.exe
+          generate_release_notes: true
