@@ -33,25 +33,26 @@ jobs:
         run: |
           pyinstaller build.spec
 
-      - name: Rename output with version tag
+      # ✅ onedir: الناتج بقى مجلد dist/PDF_Master_Pro/ (فيه exe + مكتبات)
+      # بنضغطه zip واحد عشان يبقى سهل التحميل والتوزيع كملف واحد
+      - name: Zip the onedir output
         shell: bash
         run: |
           mkdir -p dist_final
-          if [ -f "dist/PDF_Master_Pro.exe" ]; then
-            cp "dist/PDF_Master_Pro.exe" "dist_final/PDF_Master_Pro.exe"
-          fi
+          cd dist
+          7z a -tzip "../dist_final/PDF_Master_Pro-windows.zip" "PDF_Master_Pro"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PDF_Master_Pro-windows-exe
-          path: dist_final/PDF_Master_Pro.exe
+          name: PDF_Master_Pro-windows
+          path: dist_final/PDF_Master_Pro-windows.zip
           retention-days: 30
 
-      # لو الـ push كان بتاج (زي v29.1) هيتعمل Release تلقائي على GitHub بالـ exe مرفق
+      # لو الـ push كان بتاج (زي v29.1) هيتعمل Release تلقائي على GitHub بالـ zip مرفق
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist_final/PDF_Master_Pro.exe
+          files: dist_final/PDF_Master_Pro-windows.zip
           generate_release_notes: true
