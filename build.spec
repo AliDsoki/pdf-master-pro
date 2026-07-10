@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # ملف بناء PyInstaller لبرنامج PDF Master Pro
-# يبني ملف exe واحد (onefile) بدون نافذة كونسول (windowed)
+# وضع onedir: مجلد فيه exe + مكتبات بدون ضغط (أسرع تشغيل، حجم أكبر)
+# بدون نافذة كونسول (windowed)
 
 import os
 
@@ -37,17 +38,13 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,   # ✅ onedir: البيانات/المكتبات بتتحط في مجلد منفصل، مش جوه الـ exe
     name="PDF_Master_Pro",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -55,4 +52,16 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_file,
+)
+
+# ✅ onedir: تجميع الـ exe مع كل المكتبات والبيانات في مجلد واحد dist/PDF_Master_Pro/
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="PDF_Master_Pro",
 )
