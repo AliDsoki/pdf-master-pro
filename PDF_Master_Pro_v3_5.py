@@ -10199,7 +10199,7 @@ class MainWindow(QMainWindow):
         sb.addWidget(self._sep())
         self.stat_compared = QLabel("🔍 مقارن: 0/0"); sb.addWidget(self.stat_compared)
         sb.addWidget(self._sep())
-        self.stat_keys = QLabel("🔑 —"); sb.addWidget(self.stat_keys)
+        self.stat_keys = QLabel("🔑 مفاتيح: —"); sb.addWidget(self.stat_keys)
         sb.addWidget(self._sep())
         self.stat_requests = QLabel("🔁 طلبات: 0"); sb.addWidget(self.stat_requests)
         sb.addWidget(self._sep())
@@ -13408,7 +13408,7 @@ class MainWindow(QMainWindow):
         count = len(self._get_all_keys())
         used = len(self._keys_used)
         self.keys_label.setText(f"🔑 إجمالي: {count} | مستخدمة: {used}")
-        self.stat_keys.setText(f"🔑 {used}/{count}")
+        self.stat_keys.setText(f"🔑 مفاتيح: {used}/{count}")
         if hasattr(self, "blocked_label"):
             try:
                 self.global_key_mgr.cleanup_and_save()
