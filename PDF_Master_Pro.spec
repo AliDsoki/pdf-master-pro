@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['PDF_Master_Pro_v3_20.py'],
+    ['PDF_Master_Pro_v3_22.py'],
     pathex=[],
     binaries=[],
     datas=[('extract_pdf.ico', '.')],
