@@ -4,7 +4,7 @@ a = Analysis(
     ['PDF_Master_Pro_v3_20.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('extract_pdf.ico', '.')],
     hiddenimports=['google.genai', 'pypdf'],
     hookspath=[],
     hooksconfig={},
@@ -30,6 +30,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='extract_pdf.ico',
 )
 
 coll = COLLECT(
