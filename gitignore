@@ -1,12 +1,23 @@
-build/
-dist/
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# App-specific (checkpoints/outputs generated at runtime)
+*.checkpoint
 *.log
-tokens.txt
-pdf_settings.json
-keys_global_state.json
-pdf_master_pro.log
-pdf_master_fault.log
-prompts/
-_pdf_master_data/
+output/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db
