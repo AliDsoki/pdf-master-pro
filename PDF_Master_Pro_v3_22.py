@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-🌟 PDF Master Pro v3.22 — Personal Edition
+🌟 PDF Master Pro v3.5 — Personal Edition
 معالج ملفات PDF و TXT احترافي
 
-✨ التحديثات v3.22:
+✨ التحديثات v3.5:
+✅ تسمية مجلدات/نواتج الاستخراج الجزئي باسم الكتاب + نطاق الصفحات/الكلمات المختارة، مع وسم خاص للنطاقات المتعددة لمنع التداخل.
+✅ ضبط قص أسماء الكتب والنماذج في الشريط العلوي بحيث يبقى أول الاسم ظاهراً عند ضيق المساحة.
 ✅ إرجاع شاشة الترحيب الخاصة بعدم وجود المفاتيح إلى تصميمها السابق.
 ✅ إضافة شاشة تحميل ابتدائية Splash Screen تفاعلية على نمط الشاشة المرفقة، مع تقدم وحالة تحميل قبل ظهور النافذة الرئيسية.
 
@@ -1324,16 +1326,39 @@ def normalize_custom_ranges_text(text: str) -> str:
     return normalize_custom_split_input(text or "")
 
 
+def _custom_ranges_label_for_stem(raw: str) -> str:
+    """وسم مقروء للنطاقات الجزئية في اسم الكتاب: 30-35 أو متعدد_30--60_hash."""
+    raw = normalize_custom_ranges_text(raw)
+    if not raw:
+        return ""
+    pairs = []
+    for token in [x.strip() for x in re.split(r"[\n,;]+", raw) if x.strip()]:
+        nums = [int(n) for n in re.findall(r"\d+", token)]
+        if len(nums) >= 2:
+            pairs.append((nums[0], nums[1]))
+        elif len(nums) == 1:
+            # صيغة رقم منفردة: اعتبرها نطاقاً من 1 إلى الرقم عند التسمية فقط.
+            pairs.append((1, nums[0]))
+    digest = hashlib.md5(raw.encode("utf-8", errors="replace")).hexdigest()[:6]
+    if not pairs:
+        return f"جزئي_{digest}"
+    first = min(a for a, _b in pairs)
+    last = max(b for _a, b in pairs)
+    if len(pairs) == 1:
+        return f"جزئي_{first}-{last}"
+    return f"جزئي_متعدد_{first}--{last}_{digest}"
+
+
 def effective_book_stem_for(path_or_stem, custom_split_text: str = "") -> str:
-    """اسم كتاب فعلي: يضيف علامة جزئي + hash للنطاقات حتى لا يتداخل مع استخراج كامل."""
+    """اسم كتاب فعلي: يضيف نطاق الصفحات/الكلمات للاستخراج الجزئي لمنع التداخل."""
     try:
         stem = Path(path_or_stem).stem
     except Exception:
         stem = str(path_or_stem or "book")
     raw = normalize_custom_ranges_text(custom_split_text)
     if raw:
-        digest = hashlib.md5(raw.encode("utf-8", errors="replace")).hexdigest()[:8]
-        return f"{stem}_جزئي_{digest}"
+        label = _custom_ranges_label_for_stem(raw)
+        return f"{stem}_{label}" if label else stem
     return stem
 
 
@@ -2648,7 +2673,7 @@ def ensure_custom_prompt(app_dir: Path) -> None:
 
 
 HELP_FILE_CONTENT = """═══════════════════════════════════════════════════════════════
-       🌟 PDF Master Pro v3.22 — دليل المستخدم الشامل
+       🌟 PDF Master Pro v3.5 — دليل المستخدم الشامل
 ═══════════════════════════════════════════════════════════════
 
 تصميم
@@ -8803,7 +8828,7 @@ class NoKeysWelcomeDialog(QDialog):
             self.setFont(QApplication.font())
         except Exception:
             self.setFont(QFont("Tahoma, Segoe UI, Arial", 10))
-        header = QLabel("👋 <b>مرحباً بك في PDF Master Pro v3.22!</b>")
+        header = QLabel("👋 <b>مرحباً بك في PDF Master Pro v3.5!</b>")
         header_font = QFont(self.font())
         header_font.setPointSize(21)
         header_font.setBold(True)
@@ -10503,7 +10528,7 @@ class MainWindow(QMainWindow):
         self._midnight_timer.start(60_000)
 
         self.setWindowTitle(
-            f"🌟 PDF Master Pro v3.22 — Personal Edition - Parallel Extraction Edition ({PDF_BACKEND})")
+            f"🌟 PDF Master Pro v3.5 — Personal Edition - Parallel Extraction Edition ({PDF_BACKEND})")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1500, 900)
 
@@ -10595,7 +10620,11 @@ class MainWindow(QMainWindow):
         sb.setContentsMargins(8, 6, 8, 6); sb.setSpacing(2)
 
         # المعلومات أولاً (يمين في RTL)
-        self.stat_file = QLabel("📄 الملف: —"); sb.addWidget(self.stat_file)
+        self.stat_file = QLabel("📄 الملف: —")
+        self.stat_file.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.stat_file.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.stat_file.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sb.addWidget(self.stat_file, 1)
         sb.addWidget(self._sep())
         self.stat_pages = QLabel("📃 وحدات: 0"); sb.addWidget(self.stat_pages)
         sb.addWidget(self._sep())
@@ -10611,7 +10640,11 @@ class MainWindow(QMainWindow):
         sb.addWidget(self._sep())
         self.stat_batch = QLabel("📦 دفعة: —"); sb.addWidget(self.stat_batch)
         sb.addWidget(self._sep())
-        self.stat_model = QLabel("🤖 نموذج: —"); sb.addWidget(self.stat_model)
+        self.stat_model = QLabel("🤖 نموذج: —")
+        self.stat_model.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.stat_model.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.stat_model.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sb.addWidget(self.stat_model, 1)
         sb.addWidget(self._sep())
         self.stat_prompt = QLabel("📝 برومبت: —"); sb.addWidget(self.stat_prompt)
         sb.addStretch(1)
@@ -17778,7 +17811,7 @@ class InitialSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("PDF Master Pro")
         title_lbl.setObjectName("splashTitle")
-        sub_lbl = QLabel("الإصدار v3.22 — استوديو استخراج ومعالجة ومقارنة الكتب")
+        sub_lbl = QLabel("الإصدار v3.5 — استوديو استخراج ومعالجة ومقارنة الكتب")
         sub_lbl.setObjectName("splashSubTitle")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -17904,7 +17937,7 @@ def main():
 
         set_windows_app_user_model_id()
         app = QApplication(sys.argv)
-        app.setApplicationName("PDF Master Pro v3.22")
+        app.setApplicationName("PDF Master Pro v3.5")
         try:
             LOGGER.info("PDF_BACKEND=%s | PyQt6 app started", PDF_BACKEND)
         except Exception:
@@ -18016,7 +18049,7 @@ def set_windows_app_user_model_id():
     try:
         if sys.platform == "win32":
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PDFMasterPro.v3.22.Personal")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PDFMasterPro.v3.5.Personal")
     except Exception:
         pass
 
@@ -18026,5 +18059,5 @@ if __name__ == "__main__":
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  نهاية v3.22 — Personal Edition
+#  نهاية v3.5 — Personal Edition
 # ═══════════════════════════════════════════════════════════════════
