@@ -2,8 +2,19 @@
 from __future__ import annotations
 
 """
-🌟 PDF Master Pro v7.7 — Personal Edition
+🌟 PDF Master Pro v9.1 — Personal Edition
 معالج ملفات PDF و TXT احترافي
+(v9.1: إصلاح بقاء بيانات كتاب قديم ظاهرة في شاشتي المقارنة/نتائج المقارنة
+ بعد تحميل كتاب آخر من المكتبة أو سجل المقارنات — قاموس داخلي كان يجمع
+ نتائج عدة كتب من الجلسة الحالية ويُفضَّل دائماً على بيانات الكتاب المُحمَّل
+ حديثاً؛ الآن يُصفَّر عند كل عملية تحميل كتاب فتظهر بياناته فوراً بدل القديم.
+ v9.0: إصلاح عدم حفظ نموذج المقارنة عبر الجلسات؛ إصلاح عدم حفظ/استعادة
+ مقاسات المنزلقات؛ إصلاح اختفاء تبويبات (خيارات/إعدادات/مفاتيح) بعد التنقل
+ المتكرر.
+ v8.8: قوائم سياقية لحذف المسارات والكتب مع تأكيد.
+ v8.7: قائمة سياقية موحّدة بديلة لعمود "إجراء" في جداول نتائج المقارنة.
+ v8.6: إيقاف فوري مركزي عبر request_stop، وفصل كامل بين نموذج الاستخراج
+ ونموذج المقارنة بدون أي مزامنة تلقائية.)
 """
 
 import os
@@ -62,18 +73,22 @@ except ImportError:
 PDF_BACKEND = None
 
 try:
-    from pypdf import PdfReader as _PypdfReader, PdfWriter as _PypdfWriter
-    PDF_BACKEND = "pypdf"
+    import pikepdf
+    PDF_BACKEND = "pikepdf"
 except ImportError:
     try:
-        from PyPDF2 import PdfReader as _PypdfReader, PdfWriter as _PypdfWriter
+        from pypdf import PdfReader as _PypdfReader, PdfWriter as _PypdfWriter
         PDF_BACKEND = "pypdf"
     except ImportError:
         try:
-            import pdfrw
-            PDF_BACKEND = "pdfrw"
+            from PyPDF2 import PdfReader as _PypdfReader, PdfWriter as _PypdfWriter
+            PDF_BACKEND = "pypdf"
         except ImportError:
-            PDF_BACKEND = "builtin"
+            try:
+                import pdfrw
+                PDF_BACKEND = "pdfrw"
+            except ImportError:
+                PDF_BACKEND = "builtin"
 
 PDF_SPLIT_AVAILABLE = True
 
@@ -106,7 +121,7 @@ STREAM_MAX_CHARS = 50_000
 STREAM_UI_UPDATE_MS = 100
 STREAM_SUMMARY_WORDS = 200
 
-# ✅ v27.7: سجل ضعيف لحفظ حالات KeyPool المتسخة عند الإغلاق بدون تغيير بنية الملف الواحد.
+# ✅ v27.8: سجل ضعيف لحفظ حالات KeyPool المتسخة عند الإغلاق بدون تغيير بنية الملف الواحد.
 _ACTIVE_KEY_POOLS = weakref.WeakSet()
 
 SUPPORTED_PDF_EXTS = {".pdf"}
@@ -488,7 +503,7 @@ def wait_for_file_active(client, file_obj, stop_event: threading.Event,
         if time.time() - t0 > timeout:
             raise TimeoutError(f"انتهت مهلة تجهيز الملف المرفوع (state={state})")
             
-        time.sleep(2.0)
+        interruptible_sleep(2.0, stop_event)
         
         if on_progress:
             progress = min(progress + 10, 95)
@@ -504,7 +519,7 @@ def wait_for_file_active(client, file_obj, stop_event: threading.Event,
                 break
         except Exception as e:
             log(f"⏳ انتظار تجهيز الملف... ({e})")
-            time.sleep(1.0)
+            interruptible_sleep(1.0, stop_event)
             
     return file_obj
 
@@ -661,6 +676,68 @@ def _make_part_actions_button(main_window_ref, shard_idx: int) -> QWidget:
     layout.addWidget(btn_pdf)
     return widget
 
+
+def _resolve_part_actions_main_window(main_window_ref):
+    """تُرجع مرجع MainWindow (أو ما يعادله) الذي يملك دوال إجراءات الجزء،
+    بنفس منطق البحث المستخدم في _make_part_actions_button."""
+    mw = main_window_ref
+    if not hasattr(mw, "_open_part_file") and hasattr(mw, "main_window"):
+        mw = mw.main_window
+    elif not hasattr(mw, "_open_part_file") and hasattr(mw, "parentWidget") and mw.parentWidget():
+        if hasattr(mw.parentWidget(), "_open_part_file"):
+            mw = mw.parentWidget()
+        elif hasattr(mw.parentWidget(), "main_window"):
+            mw = mw.parentWidget().main_window
+    return mw
+
+
+def _build_part_actions_menu(main_window_ref, shard_idx: int) -> QMenu:
+    """✅ قائمة سياقية موحّدة لإجراءات الجزء (بديل عمود 'إجراء' في جداول المقارنة):
+    فتح الملف المستخرج / فتح ملف الأصل / إعادة مقارنة الجزء / إعادة استخراج الجزء."""
+    mw = _resolve_part_actions_main_window(main_window_ref)
+    menu = QMenu()
+    menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+
+    act_open_extracted = menu.addAction("📝 فتح الملف المستخرج")
+    act_open_extracted.triggered.connect(lambda: mw._open_part_file(shard_idx))
+
+    act_open_original = menu.addAction("📄 فتح ملف الأصل")
+    act_open_original.triggered.connect(lambda: mw._open_pdf_shard_file(shard_idx))
+
+    menu.addSeparator()
+
+    act_recompare = menu.addAction("🔍 إعادة مقارنة الجزء")
+    act_recompare.triggered.connect(lambda: mw._recompare_single_part(shard_idx))
+
+    act_reextract = menu.addAction("♻️ إعادة استخراج الجزء")
+    act_reextract.triggered.connect(lambda: mw._reextract_single_part(shard_idx))
+
+    return menu
+
+
+def _install_part_context_menu(table: "QTableWidget", main_window_ref, idx_col: int = 0):
+    """✅ تفعيل قائمة سياقية بزر الفأرة الأيمن على صفوف جدول نتائج مقارنة،
+    تعرض: فتح الملف المستخرج / فتح ملف الأصل / إعادة مقارنة الجزء / إعادة استخراج الجزء.
+    idx_col: رقم العمود الذي يحتوي رقم الجزء (نصاً) لكل صف."""
+    table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def _on_ctx_menu(pos):
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return
+        try:
+            it = table.item(row, idx_col)
+            shard_idx = int(it.text()) if it else None
+        except Exception:
+            shard_idx = None
+        if shard_idx is None:
+            return
+        table.selectRow(row)
+        menu = _build_part_actions_menu(main_window_ref, shard_idx)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    table.customContextMenuRequested.connect(_on_ctx_menu)
+
 # ═══════════════════════════════════════════════════════════════════
 
 def build_inline_comparator(output_dir, book_stem, compare_model, cfg,
@@ -682,6 +759,10 @@ def build_inline_comparator(output_dir, book_stem, compare_model, cfg,
         global_key_mgr=global_key_mgr,
         parallel_workers=workers,
         request_counter=request_counter)
+    try:
+        register_stop_component("comparators", comparator)
+    except Exception:
+        pass
     return comparator
 
 
@@ -724,7 +805,13 @@ def bootstrap_book_runtime(output_dir: Path, book_stem: str, tokens_path: Path,
     if is_txt and source_path_for_context:
         if should_upload_full_txt_context(cfg):
             txt_ctx_mgr = TxtContextManager(source_path_for_context, log_fn if log_fn else (lambda m: None))
-            
+
+    try:
+        register_stop_component("keypools", pool)
+        register_stop_component("checkpoints", ckpt)
+    except Exception:
+        pass
+
     return pool, ckpt, txt_ctx_mgr
 
 
@@ -1223,7 +1310,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_loop_threshold_pct": 90,
     "custom_split_text": "",
     "compare_max_input_chars": 200000,
-    "compare_always_default_on": True,
+    "compare_always_default_on": False,
     "history_enabled": True,
     "history_max_records": 500,
 }
@@ -1354,6 +1441,196 @@ def interruptible_sleep(seconds: float, stop_event: threading.Event) -> None:
         # نستخدم خطوة مرنة: 0.5 ثانية للانتظارات الطويلة، و 0.05 ثانية للانتظارات القصيرة
         step = min(0.5, remaining) if remaining > 2.0 else min(0.05, remaining)
         time.sleep(max(0.0, step))
+
+
+# === Stop registry & controlled immediate-stop handler ===
+_STOP_REGISTRY = {
+    "comparators": [],   # InlineComparator instances
+    "runners": [],       # ParallelExtractionRunner instances
+    "executors": [],     # ThreadPoolExecutor instances (if accessible)
+    "keypools": [],      # KeyPool instances
+    "checkpoints": [],   # Checkpoint instances
+    "clients": [],       # genai.Client instances (if you want to force-close)
+    "streams": [],       # active generate_content_stream response objects
+    "other": [],         # any other stoppable objects
+}
+
+def register_stop_component(kind: str, obj):
+    try:
+        if kind not in _STOP_REGISTRY:
+            _STOP_REGISTRY.setdefault(kind, [])
+        if obj not in _STOP_REGISTRY[kind]:
+            _STOP_REGISTRY[kind].append(obj)
+    except Exception:
+        pass
+
+def unregister_stop_component(kind: str, obj):
+    try:
+        if kind in _STOP_REGISTRY and obj in _STOP_REGISTRY[kind]:
+            _STOP_REGISTRY[kind].remove(obj)
+    except Exception:
+        pass
+
+def _join_threads_list(threads, timeout):
+    end = time.time() + timeout
+    for th in threads:
+        rem = end - time.time()
+        if rem <= 0:
+            break
+        try:
+            th.join(timeout=rem)
+        except Exception:
+            pass
+
+def request_stop(timeout: float = 10.0, log_fn: Callable[[str], None] = lambda m: None):
+    """
+    Central immediate-stop flow:
+    - set global stop_event (if exists in callers)
+    - call stop on registered components (non-blocking)
+    - save keypool/checkpoints/partials
+    - wait up to `timeout` seconds for background worker threads to finish
+      (MainThread/GUI thread is always excluded — this never kills the app)
+    """
+    t0 = time.time()
+    log_fn(f"⏳ إيقاف فوري طُلب — مهلة {timeout}s")
+
+    # 1) set any stop_event objects we can find in registry items (if present)
+    # The codebase uses explicit stop_event instances; code that calls request_stop
+    # should also set those stop_event objects as needed. Here we only act on
+    # registered components.
+
+    # 2) Streams FIRST: force-close any in-flight generate_content_stream
+    # responses. ✅ هذا هو الجزء الأهم لتقليل زمن الإيقاف — قراءة الـ stream
+    # داخل خيط العامل تحظر (blocking) على استقبال الجزء التالي من الشبكة،
+    # ولا تتحقق من stop_event إلا بين جزء وآخر. إغلاق الاتصال هنا من خيط
+    # الإيقاف مباشرة، وقبل أي شيء آخر، يجعل القراءة المحظورة تفشل فوراً
+    # بدلاً من الانتظار حتى يصل جزء جديد (وهو ما كان يسبب تأخر الإيقاف حتى
+    # ~40 ثانية). فعل هذا أولاً يجعل انتظارات لاحقة مثل join(timeout=5) في
+    # comparator.stop() تنتهي سريعاً بدل استهلاك مهلتها كاملة.
+    for st in list(_STOP_REGISTRY.get("streams", [])):
+        try:
+            if hasattr(st, "close"):
+                st.close()
+            elif hasattr(st, "_response") and hasattr(st._response, "close"):
+                st._response.close()
+            unregister_stop_component("streams", st)
+        except Exception as e:
+            log_fn(f"⚠️ stream close error: {e}")
+
+    # 3) Call stop/unregister on comparators and runners (non-blocking)
+    # Comparators: have stop(wait=False)
+    for c in list(_STOP_REGISTRY.get("comparators", [])):
+        try:
+            if hasattr(c, "stop"):
+                c.stop(wait=False)
+            unregister_stop_component("comparators", c)
+        except Exception as e:
+            log_fn(f"⚠️ stop comparator error: {e}")
+
+    # Runners: if they have stop() method
+    for r in list(_STOP_REGISTRY.get("runners", [])):
+        try:
+            if hasattr(r, "stop"):
+                r.stop()
+            unregister_stop_component("runners", r)
+        except Exception as e:
+            log_fn(f"⚠️ stop runner error: {e}")
+
+    # Executors: attempt shutdown(cancel_futures=True)
+    for ex in list(_STOP_REGISTRY.get("executors", [])):
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+            unregister_stop_component("executors", ex)
+        except Exception:
+            try:
+                # fallback: try a non-blocking shutdown without cancel_futures if old Python
+                ex.shutdown(wait=False)
+                unregister_stop_component("executors", ex)
+            except Exception as e:
+                log_fn(f"⚠️ executor.shutdown error: {e}")
+
+    # Clients: try to close transports/sessions if possible
+    for cl in list(_STOP_REGISTRY.get("clients", [])):
+        try:
+            # some client implementations may expose _transport or session
+            if hasattr(cl, "close"):
+                try: cl.close()
+                except Exception: pass
+            if hasattr(cl, "_transport") and getattr(cl, "_transport", None):
+                try: cl._transport.close()
+                except Exception: pass
+            unregister_stop_component("clients", cl)
+        except Exception as e:
+            log_fn(f"⚠️ client close error: {e}")
+
+    # 3) Save state: keypools, checkpoints, comparator partials
+    for kp in list(_STOP_REGISTRY.get("keypools", [])):
+        try:
+            if hasattr(kp, "save_dirty"):
+                kp.save_dirty()
+            else:
+                try:
+                    kp._save()
+                except Exception:
+                    pass
+            unregister_stop_component("keypools", kp)
+        except Exception as e:
+            log_fn(f"⚠️ keypool save error: {e}")
+
+    for ck in list(_STOP_REGISTRY.get("checkpoints", [])):
+        try:
+            if hasattr(ck, "_save"):
+                ck._save()
+            unregister_stop_component("checkpoints", ck)
+        except Exception as e:
+            log_fn(f"⚠️ checkpoint save error: {e}")
+
+    # comparator partials (if any remain)
+    for c in list(_STOP_REGISTRY.get("comparators", [])):
+        try:
+            if hasattr(c, "_save_results"):
+                c._save_results()
+        except Exception:
+            pass
+
+    # 4) Wait briefly up to timeout for remaining WORKER threads to stop.
+    #    ✅ نستثني هنا صراحةً MainThread (خيط واجهة المستخدم) وأي خيط اسمه
+    #    يبدأ بـ Qt/GUI، لأنه من الطبيعي أن يبقى حياً طالما التطبيق مفتوح —
+    #    انتظاره أو اعتباره "خيطاً عالقاً" كان يتسبب في إغلاق البرنامج بالكامل
+    #    عند كل ضغطة إيقاف. هذه الدالة توقف مهمة الاستخراج/المقارنة الحالية
+    #    فقط، ولا يجوز أبداً أن تُنهي عملية التطبيق نفسها.
+    main_th = threading.main_thread()
+    remaining = max(0.0, timeout - (time.time() - t0))
+    threads = [
+        th for th in threading.enumerate()
+        if th is not threading.current_thread() and th is not main_th and not th.daemon
+    ]
+    if threads:
+        log_fn(f"⏳ انتظار انهاء {len(threads)} خيوط حتى {remaining:.1f}s...")
+        _join_threads_list(threads, remaining)
+
+    # 5) Final save attempt
+    for kp in list(_STOP_REGISTRY.get("keypools", [])):
+        try:
+            if hasattr(kp, "save_dirty"):
+                kp.save_dirty()
+        except Exception:
+            pass
+
+    # 6) لا يوجد أي إنهاء قسري للعملية (os._exit) هنا مطلقاً — هذا برنامج واجهة
+    #    رسومية والمستخدم يريد إيقاف المهمة الحالية فقط ثم إمكانية بدء مهمة
+    #    جديدة دون إغلاق التطبيق. إن بقي خيط عامل حياً (مثلاً بسبب طلب شبكة
+    #    لم يتفاعل بعد مع الإلغاء)، فسينتهي من تلقاء نفسه لاحقاً في الخلفية
+    #    (daemon threads لن تمنع إغلاق التطبيق عند إغلاقه يدوياً لاحقاً).
+    alive = [
+        th for th in threading.enumerate()
+        if th is not threading.current_thread() and th is not main_th and not th.daemon
+    ]
+    if alive:
+        log_fn(f"⚠️ بعض خيوط المعالجة ({len(alive)}) لا تزال تُنهي عملها في الخلفية "
+               f"بعد {timeout}s — تم حفظ الحالة، ويمكنك بدء مهمة جديدة الآن.")
+    else:
+        log_fn(f"✅ تم الإيقاف بنجاح خلال {time.time() - t0:.1f}s")
 
 
 def is_txt_file(path: Path) -> bool:
@@ -1523,7 +1800,7 @@ def wait_for_network_if_needed(cfg: dict, stop_event: threading.Event,
             except Exception: pass
         offline_logged = True
         state["offline"] = True
-        time.sleep(3.0)
+        interruptible_sleep(3.0, stop_event)
     return False
 
 
@@ -2059,7 +2336,11 @@ def is_valid_split_input(shard) -> Tuple[bool, str]:
 
 def _raw_pdf_page_count(pdf_path: Path) -> int:
     try:
-        if PDF_BACKEND == "pypdf":
+        if PDF_BACKEND == "pikepdf":
+            import pikepdf
+            with pikepdf.open(pdf_path) as pdf:
+                return len(pdf.pages)
+        elif PDF_BACKEND == "pypdf":
             return len(_PypdfReader(str(pdf_path)).pages)
         elif PDF_BACKEND == "pdfrw":
             import pdfrw
@@ -2130,7 +2411,11 @@ def split_pdf_into_shards(source_pdf: Path, shards_dir: Path,
             log(f"✂️ التقسيم المخصص: {original_n} قسم → {len(custom_ranges)} دفعة "
                 f"(حد {pages_per_batch} صفحة/دفعة)")
 
-    if PDF_BACKEND == "pypdf":
+    if PDF_BACKEND == "pikepdf":
+        return _split_with_pikepdf(source_pdf, shards_dir, pages_per_batch,
+                                   log, stop_event, on_progress,
+                                   custom_ranges=custom_ranges)
+    elif PDF_BACKEND == "pypdf":
         return _split_with_pypdf(source_pdf, shards_dir, pages_per_batch,
                                    log, stop_event, on_progress,
                                    custom_ranges=custom_ranges)
@@ -2155,6 +2440,18 @@ def _split_with_pypdf(source_pdf, shards_dir, pages_per_batch,
         for pn in range(start - 1, end):
             _check_stop(stop_event)
             writer.add_page(reader.pages[pn])
+        try:
+            root = writer._root_object
+            for key in ("/StructTreeRoot", "/MarkInfo", "/Outlines",
+                        "/Names", "/AcroForm", "/OpenAction"):
+                if key in root:
+                    del root[key]
+        except Exception as e:
+            log(f"   ⚠️ تعذر تنظيف الأوبجكتات المشتركة: {e}")
+        try:
+            writer.compress_identical_objects(remove_orphans=True, remove_identicals=True)
+        except Exception:
+            pass
         with open(dest, "wb") as f:
             writer.write(f)
 
@@ -2204,6 +2501,53 @@ def _split_with_pdfrw(source_pdf, shards_dir, pages_per_batch,
         read_total_pages=read_total_pages,
         write_shard=write_shard,
         get_reader=lambda p: pdfrw.PdfReader(str(p)),
+        check_existing_shard=check_existing_shard
+    )
+
+
+def _split_with_pikepdf(source_pdf, shards_dir, pages_per_batch,
+                         log, stop_event, on_progress,
+                         custom_ranges: Optional[List[Tuple[int, int]]] = None) -> List[PDFShard]:
+    import pikepdf
+
+    def read_total_pages(p):
+        with pikepdf.open(p) as pdf:
+            return len(pdf.pages)
+
+    def write_shard(reader, start, end, dest):
+        # استراتيجية "إعادة البناء الجذري":
+        # نقوم بإنشاء ملف جديد تماماً ونسخ الصفحات ككائنات مستقلة لقطع الروابط مع الموارد الضخمة غير المستخدمة.
+        with pikepdf.new() as writer:
+            for pn in range(start - 1, end):
+                _check_stop(stop_event)
+                # الطريقة الصحيحة لنسخ الصفحات بين ملفات مختلفة في pikepdf
+                writer.pages.append(reader.pages[pn])
+            
+            # تنظيف شامل للموارد غير المشار إليها لتقليل الحجم
+            writer.remove_unreferenced_resources()
+            
+            # محاولة ضغط الموارد المتبقية (الصور والجداول)
+            try:
+                writer.compress_resources(pikepdf.Compression.all_)
+            except Exception:
+                pass
+            
+            # حفظ الملف مع تفعيل خيارات التنظيف الإضافية
+            writer.save(dest, linearize=False, object_stream_mode=pikepdf.ObjectStreamMode.generate)
+
+    def check_existing_shard(spath, start, end):
+        try:
+            with pikepdf.open(spath) as check:
+                return len(check.pages) == (end - start + 1)
+        except Exception:
+            return False
+
+    return _generic_pdf_splitter(
+        source_pdf, shards_dir, pages_per_batch, log, stop_event, on_progress, custom_ranges,
+        backend_name="pikepdf",
+        read_total_pages=read_total_pages,
+        write_shard=write_shard,
+        get_reader=lambda p: pikepdf.open(p),
         check_existing_shard=check_existing_shard
     )
 
@@ -2462,6 +2806,114 @@ class SettingsManager:
                 self.data[k] = v
         self.save()
 
+    def copy_extraction_model_to_compare(self):
+        """
+        نسخ model_id الحالي إلى compare_model_id وحفظ الإعدادات.
+        يجب استدعاؤها فقط حين يضغط المستخدم زرًا صريحًا لذلك.
+        """
+        try:
+            with self._lock:
+                self.data["compare_model_id"] = self.data.get("model_id", "")
+                self.data["compare_model_family"] = self.data.get("model_family", "")
+            self.save()
+        except Exception:
+            pass
+
+
+def format_timestamp_human_iso(iso_str: str) -> str:
+    try:
+        if not iso_str:
+            return "—"
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso_str
+
+
+class KnownRootsManager:
+    """مدير للمسارات المعروفة ومجلدات الإخراج النشطة لضمان تماسك الجلسات والمكتبة."""
+    def __init__(self, app_dir: Path):
+        self.app_dir = app_dir
+        self.path = app_dir / "known_output_roots.json"
+        self._lock = threading.RLock()
+
+    def _load_locked(self) -> List[dict]:
+        try:
+            data = read_json_file_safe(self.path, [])
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        return []
+
+    def _save_locked(self, records: List[dict]) -> None:
+        try:
+            sorted_records = sorted(records, key=lambda r: str(r.get("last_used") or ""), reverse=True)
+            atomic_write_text(
+                self.path,
+                json.dumps(sorted_records, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception as e:
+            safe_print(f"[roots_manager] save error: {e}")
+
+    def add_or_update_root(self, path_str: str, label: Optional[str] = None):
+        if not path_str:
+            return
+        p_resolved = str(Path(path_str).resolve())
+        with self._lock:
+            try:
+                records = self._load_locked()
+                found = False
+                for r in records:
+                    if str(Path(r["path"]).resolve()) == p_resolved:
+                        r["last_used"] = datetime.now().isoformat()
+                        if label:
+                            r["label"] = label
+                        found = True
+                        break
+                if not found:
+                    records.append({
+                        "path": str(Path(path_str).absolute()),
+                        "last_used": datetime.now().isoformat(),
+                        "label": label or ""
+                    })
+                self._save_locked(records)
+            except Exception as e:
+                safe_print(f"[roots_manager] add_or_update_root error: {e}")
+
+    def get_all_roots(self) -> List[dict]:
+        with self._lock:
+            return self._load_locked()
+
+    def remove_root(self, path_str: str):
+        if not path_str:
+            return
+        p_resolved = str(Path(path_str).resolve())
+        with self._lock:
+            try:
+                records = self._load_locked()
+                records = [r for r in records if str(Path(r["path"]).resolve()) != p_resolved]
+                self._save_locked(records)
+            except Exception as e:
+                safe_print(f"[roots_manager] remove_root error: {e}")
+
+    def cleanup_unreachable(self):
+        with self._lock:
+            try:
+                records = self._load_locked()
+                valid_records = []
+                for r in records:
+                    try:
+                        p = Path(r["path"])
+                        if p.exists():
+                            valid_records.append(r)
+                    except Exception:
+                        pass
+                if len(valid_records) != len(records):
+                    self._save_locked(valid_records)
+            except Exception as e:
+                safe_print(f"[roots_manager] cleanup_unreachable error: {e}")
+
 
 class HistoryManager:
     # ✅ v27.0: مدير سجل دائم وآمن للخيوط لكل عمليات الاستخراج
@@ -2655,7 +3107,7 @@ def ensure_custom_prompt(app_dir: Path) -> None:
 
 
 HELP_FILE_CONTENT = """═══════════════════════════════════════════════════════════════
-       🌟 PDF Master Pro v7.7 — دليل المستخدم الشامل
+       🌟 PDF Master Pro v8.2 — دليل المستخدم الشامل
 ═══════════════════════════════════════════════════════════════
 
 تصميم
@@ -2816,7 +3268,7 @@ Gemini. الهدف الأساسي هو استخراج النصوص الطويل�
 ───────────────────────────────────────────────────────────────
 10) مكتبة الكتب السابقة وسجل المقارنة
 ───────────────────────────────────────────────────────────────
-• مكتبة الكتب السابقة تعرض الكتب الموجودة في مجلد الإخراج.
+• مكتبة الكتب السابقة تبحث تلقائياً وتعرض الكتب الموجودة في جميع المسارات المعروفة المحفوظة. يتيح زر "إدارة المسارات المعروفة" المتاح هناك إضافة مسارات جديدة يدوياً، أو حذف المسارات التي لم تعد بحاجة إليها، أو تنظيف المسارات غير المتاحة بسهولة.
 • يمكنك تحميل كتاب سابق ليصبح هو الكتاب النشط.
 • يمكنك فتح الناتج النهائي أو عرض نتائج المقارنة المحفوظة.
 • سجل المقارنة يقرأ ملفات partial.json و final.json من مجلد compare.
@@ -3247,7 +3699,7 @@ class KeyPool:
         self.global_state_path = global_state_path
         self.cfg = cfg
         self._lock = threading.RLock()
-        # ✅ v27.7: dirty/debounce لتجميع حفظ حالة المفاتيح بدل fsync بعد كل تحديث.
+        # ✅ v27.8: dirty/debounce لتجميع حفظ حالة المفاتيح بدل fsync بعد كل تحديث.
         self._dirty = False
         self._last_save_time = 0.0
         try:
@@ -3338,14 +3790,14 @@ class KeyPool:
         except Exception as e:
             safe_print(f"[KeyPool._save] error: {e}")
         self._save_global()
-        # ✅ v27.7: الحفظ الفعلي (يدوي/إجباري) يفرّغ علامة dirty ويحدّث توقيت آخر حفظ.
+        # ✅ v27.8: الحفظ الفعلي (يدوي/إجباري) يفرّغ علامة dirty ويحدّث توقيت آخر حفظ.
         with self._lock:
             self._dirty = False
             self._last_save_time = time.time()
 
     def maybe_save(self, min_interval: float = 2.0) -> None:
         """حفظ مجمّع لحالة المفاتيح عند مرور فترة كافية فقط."""
-        # ✅ v27.7: يقلّل الكتابة الذرية المتكررة تحت ضغط الاستخراج المتوازي.
+        # ✅ v27.8: يقلّل الكتابة الذرية المتكررة تحت ضغط الاستخراج المتوازي.
         now = time.time()
         with self._lock:
             if not self._dirty or (now - self._last_save_time) < min_interval:
@@ -3450,20 +3902,20 @@ class KeyPool:
                     "kind": "unknown",
                     "day": today_key()}
             state.fail_count += 1
-            # ✅ v27.7: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
+            # ✅ v27.8: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
             self._dirty = True
 
     def mark_success(self, state: KeyState) -> None:
         with self._lock:
             state.success_count += 1
             state.empty_response_count = 0
-            # ✅ v27.7: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
+            # ✅ v27.8: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
             self._dirty = True
 
     def mark_empty_response(self, state: KeyState) -> int:
         with self._lock:
             state.empty_response_count += 1
-            # ✅ v27.7: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
+            # ✅ v27.8: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
             self._dirty = True
             return state.empty_response_count
 
@@ -3471,7 +3923,7 @@ class KeyPool:
                              file_name: str) -> None:
         with self._lock:
             state.uploaded_shards[shard_md5] = file_name
-            # ✅ v27.7: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
+            # ✅ v27.8: علّم الحالة كمتغيرة واترك الحفظ للتجميع الدوري.
             self._dirty = True
 
 
@@ -3652,7 +4104,7 @@ class GlobalKeyManager:
                 return None
             if time.time() >= end:
                 return None
-            time.sleep(0.2)
+            interruptible_sleep(0.2, stop_event)
 
     def release_key(self, api_key: Optional[str], model_id: str):
         if not api_key:
@@ -3906,23 +4358,33 @@ def call_model_stream(client, model_id, model_family, file_refs,
 
             stream = client.models.generate_content_stream(
                 model=model_id, contents=contents, config=gen_cfg)
-            for chunk in stream:
-                if stop_event.is_set():
-                    try:
-                        if hasattr(stream, "close"):
-                            stream.close()
-                        elif hasattr(stream, "_response") and hasattr(stream._response, "close"):
-                            stream._response.close()
-                    except Exception:
-                        pass
-                    raise InterruptedError("توقف فوري")
-                if chunk.text:
-                    buf.append(chunk.text)
-                    try:
-                        on_token(chunk.text)
-                    except Exception:
-                        pass
-                last_chunk = chunk
+            try:
+                register_stop_component("streams", stream)
+            except Exception:
+                pass
+            try:
+                for chunk in stream:
+                    if stop_event.is_set():
+                        try:
+                            if hasattr(stream, "close"):
+                                stream.close()
+                            elif hasattr(stream, "_response") and hasattr(stream._response, "close"):
+                                stream._response.close()
+                        except Exception:
+                            pass
+                        raise InterruptedError("توقف فوري")
+                    if chunk.text:
+                        buf.append(chunk.text)
+                        try:
+                            on_token(chunk.text)
+                        except Exception:
+                            pass
+                    last_chunk = chunk
+            finally:
+                try:
+                    unregister_stop_component("streams", stream)
+                except Exception:
+                    pass
 
             if last_chunk is not None:
                 cands = getattr(last_chunk, "candidates", None) or []
@@ -4516,6 +4978,10 @@ class InlineComparator:
             else:
                 client = genai.Client(api_key=api_key)
                 self._client_cache[api_key] = client
+                try:
+                    register_stop_component("clients", client)
+                except Exception:
+                    pass
 
             uploader = ShardUploader(shard)
             file_uri = None
@@ -4752,6 +5218,7 @@ class InlineComparator:
             return
 
     def wait_until_done(self, timeout: float = 600) -> bool:
+        """✅ v8.4: انتظار اكتمال المهام مع استجابة أسرع للإيقاف."""
         end = time.time() + timeout
         while time.time() < end:
             if self.stop_event.is_set():
@@ -4764,7 +5231,10 @@ class InlineComparator:
                     self._pending_futures = pending
                 if not pending:
                     return True
-            time.sleep(0.3)
+            try:
+                interruptible_sleep(0.2, self.stop_event)
+            except InterruptedError:
+                return False
         return False
 
     def stop(self, wait: bool = True):
@@ -4923,6 +5393,10 @@ class InlineComparator:
             if self.stop_event.is_set(): return None
             try:
                 client = genai.Client(api_key=api_key)
+                try:
+                    register_stop_component("clients", client)
+                except Exception:
+                    pass
                 cfg_kwargs = dict(
                     temperature=0.3,
                     max_output_tokens=4000,
@@ -5029,6 +5503,10 @@ class ShardRuntimeContext:
         self.log(f"🔑 المفتاح النشط: {ks.masked} "
                   f"(نجاحات={ks.success_count}, إخفاقات={ks.fail_count})")
         self.client = genai.Client(api_key=ks.key)
+        try:
+            register_stop_component("clients", self.client)
+        except Exception:
+            pass
         return True
 
     def upload_shard(self, shard: PDFShard,
@@ -5274,6 +5752,7 @@ def process_shard(shard, total_shards, model, ctx, system_prompt, cfg,
             if is_file_lost_error(e):
                 log(f"📛 الجزء مفقود على السيرفر — إعادة رفع.")
                 ctx.key_state.uploaded_shards.pop(shard.shard_md5, None)
+                force_fresh = True # v8.4: إجبار الرفع الجديد في المحاولة القادمة
                 continue
             # ✅ v24.4: 503/UNAVAILABLE = خادم مشغول — لا تبدّل المفتاح ولا تعيد الرفع
             if is_server_overloaded_error(e):
@@ -5459,14 +5938,17 @@ class ParallelExtractionRunner:
             self.workers = safe_max
         else:
             self.workers = requested_workers
-        # ✅ v27.7: إبلاغ الواجهة بالعدد الفعلي دون تعديل القيمة المحفوظة في الإعدادات.
+        # ✅ v27.8: إبلاغ الواجهة بالعدد الفعلي دون تعديل القيمة المحفوظة في الإعدادات.
         self._lane_event(0, "workers_config", requested_workers=requested_workers,
                          actual_workers=self.workers, available_keys=available_keys,
                          model_id=self.model["id"])
 
     def _wait_if_paused(self):
         while self.pause_event.is_set() and not self.stop_event.is_set():
-            time.sleep(0.2)
+            try:
+                interruptible_sleep(0.2, self.stop_event)
+            except InterruptedError:
+                break
 
     def _lane_log(self, lane_id: int, msg: str):
         self.on_log(f"[مسار {lane_id}] {msg}")
@@ -5493,7 +5975,7 @@ class ParallelExtractionRunner:
         try:
             self.on_stream_event(payload)
         except Exception as e:
-            # ✅ v27.7: لا نكتم أخطاء بث أحداث المسارات لأنها تؤثر على وضوح الواجهة.
+            # ✅ v27.8: لا نكتم أخطاء بث أحداث المسارات لأنها تؤثر على وضوح الواجهة.
             safe_print(f"[ParallelExtractionRunner._lane_event] error: {e}")
 
     def _mark_failed(self, shard: PDFShard, note: str):
@@ -5572,9 +6054,14 @@ class ParallelExtractionRunner:
             if self.stop_event.is_set():
                 break
             try:
-                shard = self._queue.get_nowait()
+                # v8.4: الانتظار قليلاً في حال وجود أجزاء قيد إعادة الجدولة
+                shard = self._queue.get(timeout=5)
             except queue.Empty:
-                break
+                # إذا فرغ الطابور تماماً ولم يعد هناك أجزاء قيد المعالجة
+                with self._completed_lock:
+                    if self.completed_count + len(self.failed) >= self.total_shards:
+                        break
+                continue
             counted = False
             try:
                 # ✅ v24.4: إيقاف مؤقت عند كثرة 503
@@ -5654,7 +6141,7 @@ class ParallelExtractionRunner:
                             self._lane_log(lane_id, f"⚠️  تعذر إرسال للمقارن: {e}")
                     self._lane_event(lane_id, "finish", shard, status="ok",
                                      summary=tail_words(psout.text, STREAM_SUMMARY_WORDS))
-                    # ✅ v27.7: عدّ الجزء الناجح كمحسوم لتحديث التقدم وتطبيق تأخير الدفعات.
+                    # ✅ v27.8: عدّ الجزء الناجح كمحسوم لتحديث التقدم وتطبيق تأخير الدفعات.
                     counted = True
                 else:
                     # ✅ v24.6: إذا فشل بسبب كوتة → لا تعيد الجدولة فوراً
@@ -5695,7 +6182,7 @@ class ParallelExtractionRunner:
                     pass
                 if counted:
                     self._mark_progress_done(shard)
-                    # ✅ v27.7: حفظ KeyPool المجمع بعد حسم كل جزء بدون fsync لكل تحديث داخلي.
+                    # ✅ v27.8: حفظ KeyPool المجمع بعد حسم كل جزء بدون fsync لكل تحديث داخلي.
                     self.pool.maybe_save()
                     delay_s = float(self.cfg.get("delay_between_batches", 0) or 0)
                     # ✅ OPT-QUOTA: حد أدنى 1s تأخير عند تشغيل مسارات متعددة
@@ -5872,7 +6359,10 @@ class PDFProcessor:
 
     def _wait_if_paused(self):
         while self.pause_event.is_set() and not self.stop_event.is_set():
-            time.sleep(0.2)
+            try:
+                interruptible_sleep(0.2, self.stop_event)
+            except InterruptedError:
+                break
 
     def _safe_log(self, msg: str):
         try:
@@ -5942,6 +6432,10 @@ class PDFProcessor:
         checkpoints_dir = get_book_checkpoints_dir(self.output_dir, self.book_stem)
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
         ckpt = Checkpoint(checkpoints_dir / "checkpoint.json")
+        try:
+            register_stop_component("checkpoints", ckpt)
+        except Exception:
+            pass
 
         shards_dir = get_book_shards_dir(self.output_dir, self.book_stem)
         log("━━━ مرحلة التقسيم ━━━")
@@ -6009,6 +6503,10 @@ class PDFProcessor:
         except Exception as e:
             return FileResult(False, None, None, 0, 0, [], str(e),
                                 file_path=self.in_path, is_txt=is_txt)
+        try:
+            register_stop_component("keypools", pool)
+        except Exception:
+            pass
 
         log(f"🔑 المفاتيح الكلية: {len(pool.states)}")
         log(f"   متاحة لـ {self.model['id']}: "
@@ -6021,7 +6519,7 @@ class PDFProcessor:
                 "total_pages": total_units,
             })
         except Exception as e:
-            # ✅ v27.7: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
+            # ✅ v27.8: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
             safe_print(f"[PDFProcessor.on_progress:init] error: {e}")
 
         txt_ctx_mgr = None
@@ -6030,7 +6528,7 @@ class PDFProcessor:
 
         if pool.count_available_for_model(self.model["id"]) <= 0:
             wait = pool.secs_until_any_available_for_model(self.model["id"])
-            # ✅ v27.7: حفظ إجباري لحالة المفاتيح عند إنهاء معالجة الملف مبكراً.
+            # ✅ v27.8: حفظ إجباري لحالة المفاتيح عند إنهاء معالجة الملف مبكراً.
             pool.save_dirty()
             return FileResult(False, None, None, len(shards), 0, [],
                                 f"لا مفتاح متاح لـ {self.model['id']}! "
@@ -6060,6 +6558,10 @@ class PDFProcessor:
                     parallel_workers=workers,
                     request_counter=getattr(self, 'request_counter', None))
                 comparator.start()
+                try:
+                    register_stop_component("comparators", comparator)
+                except Exception:
+                    pass
                 log(f"🔍 مقارنة متوازية بنموذج {self.compare_model['id']} "
                     f"({workers} عمال)")
             except Exception as e:
@@ -6085,7 +6587,7 @@ class PDFProcessor:
                             try:
                                 self.on_compare_partial(prev)
                             except Exception as e:
-                                # ✅ v27.7: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
+                                # ✅ v27.8: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
                                 safe_print(f"[PDFProcessor.on_compare_partial:resume] error: {e}")
                         else:
                             try:
@@ -6110,7 +6612,7 @@ class PDFProcessor:
                     "batch_pages": 0,
                 })
             except Exception as e:
-                # ✅ v27.7: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
+                # ✅ v27.8: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
                 safe_print(f"[PDFProcessor.on_progress:resume] error: {e}")
 
             if pending_shards:
@@ -6141,7 +6643,17 @@ class PDFProcessor:
                     already_done=len(completed_existing),
                     book_stem=self.book_stem,
                 )
-                failed = runner.run()
+                try:
+                    register_stop_component("runners", runner)
+                except Exception:
+                    pass
+                try:
+                    failed = runner.run()
+                finally:
+                    try:
+                        unregister_stop_component("runners", runner)
+                    except Exception:
+                        pass
             else:
                 log("✅ لا توجد أجزاء جديدة للمعالجة — كل الأجزاء مكتملة فعلياً.")
         except InterruptedError:
@@ -6188,7 +6700,7 @@ class PDFProcessor:
                                 try:
                                     self.on_compare_final(compare_summary)
                                 except Exception as e:
-                                    # ✅ v27.7: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
+                                    # ✅ v27.8: تسجيل تشخيصي لأخطاء callback بدل كتمانها.
                                     safe_print(f"[PDFProcessor.on_compare_final] error: {e}")
                         except Exception as e:
                             log(f"⚠️  فشل التقرير الشامل: {e}")
@@ -6224,7 +6736,7 @@ class PDFProcessor:
                     cleanup_shards(shards_dir, log)
                 else:
                     log(f"ℹ️  الأجزاء محفوظة في: {shards_dir}")
-                # ✅ v27.7: حفظ إجباري لحالة المفاتيح عند نهاية معالجة كل ملف.
+                # ✅ v27.8: حفظ إجباري لحالة المفاتيح عند نهاية معالجة كل ملف.
                 pool.save_dirty()
                 return FileResult(True, final_path, None, len(shards),
                                     ok_count, [],
@@ -6237,7 +6749,7 @@ class PDFProcessor:
                 atomic_write_text(inc, final_text, encoding="utf-8")
                 log(f"⚠️  ناتج جزئي: {inc}")
                 log(f"ℹ️  الأجزاء محفوظة في: {shards_dir} (للاستئناف)")
-                # ✅ v27.7: حفظ إجباري لحالة المفاتيح عند نهاية معالجة كل ملف.
+                # ✅ v27.8: حفظ إجباري لحالة المفاتيح عند نهاية معالجة كل ملف.
                 pool.save_dirty()
                 return FileResult(False, None, inc, len(shards), ok_count,
                                     failed, f"ناتج جزئي. فاشلة: {failed}",
@@ -6246,7 +6758,7 @@ class PDFProcessor:
                                     is_txt=is_txt)
         except Exception as e:
             log(f"💥 فشل حفظ الناتج النهائي: {e}")
-            # ✅ v27.7: حتى عند فشل الحفظ النهائي نحفظ حالة المفاتيح قبل الخروج.
+            # ✅ v27.8: حتى عند فشل الحفظ النهائي نحفظ حالة المفاتيح قبل الخروج.
             pool.save_dirty()
             return FileResult(False, None, None, len(shards), ok_count,
                                 failed, f"فشل الحفظ: {e}",
@@ -6637,6 +7149,10 @@ class ReextractWorker(QObject):
                         parallel_workers=workers,
                         request_counter=self.request_counter)
                     comparator.start()
+                    try:
+                        register_stop_component("comparators", comparator)
+                    except Exception:
+                        pass
                 except Exception as e:
                     log(f"⚠️  تعذر بدء المقارن: {e}")
                     comparator = None
@@ -6691,7 +7207,17 @@ class ReextractWorker(QObject):
                     txt_context_mgr=txt_ctx_mgr,
                     force_fresh_upload=True,
                     already_done=0)
-                failed_idx = runner.run()
+                try:
+                    register_stop_component("runners", runner)
+                except Exception:
+                    pass
+                try:
+                    failed_idx = runner.run()
+                finally:
+                    try:
+                        unregister_stop_component("runners", runner)
+                    except Exception:
+                        pass
             log("\n════ إعادة دمج الملف النهائي ════")
             rebuild_and_save_final_output(self.output_dir, parent_stem, self.parts_dir, self.shards, is_txt_book, log, make_backup=True)
 
@@ -6841,6 +7367,10 @@ class AutoLoopWorker(QObject):
                 parallel_workers=workers,
                 request_counter=self.request_counter)
             comparator.start()
+            try:
+                register_stop_component("comparators", comparator)
+            except Exception:
+                pass
             
             shard_map = {s.idx: s for s in self.shards}
             for idx in uncompared:
@@ -6859,6 +7389,10 @@ class AutoLoopWorker(QObject):
                         
             comparator.wait_until_done(timeout=1800)
             comparator.stop(wait=True)
+            try:
+                unregister_stop_component("comparators", comparator)
+            except Exception:
+                pass
             log(f"✅ تم الانتهاء من مقارنة {len(uncompared)} جزء غير مقارن سابقاً.")
         except Exception as e:
             log(f"⚠️ فشل مقارنة الأجزاء غير المقارنة: {e}")
@@ -6982,8 +7516,16 @@ class AutoLoopWorker(QObject):
         except Exception as e:
             log(f"💥 فشل تحميل المفاتيح: {e}")
             return False
+        try:
+            register_stop_component("keypools", pool)
+        except Exception:
+            pass
 
         ckpt = Checkpoint(checkpoints_dir / "checkpoint.json")
+        try:
+            register_stop_component("checkpoints", ckpt)
+        except Exception:
+            pass
         is_txt_book = is_txt_file(self.book_path)
 
         txt_ctx_mgr = None
@@ -7015,6 +7557,10 @@ class AutoLoopWorker(QObject):
                     parallel_workers=workers,
                     request_counter=self.request_counter)
                 comparator.start()
+                try:
+                    register_stop_component("comparators", comparator)
+                except Exception:
+                    pass
             except Exception as e:
                 log(f"⚠️  تعذر بدء المقارن: {e}")
                 comparator = None
@@ -7072,7 +7618,17 @@ class AutoLoopWorker(QObject):
                 txt_context_mgr=txt_ctx_mgr,
                 force_fresh_upload=True,
                 already_done=0)
-            runner.run()
+            try:
+                register_stop_component("runners", runner)
+            except Exception:
+                pass
+            try:
+                runner.run()
+            finally:
+                try:
+                    unregister_stop_component("runners", runner)
+                except Exception:
+                    pass
 
         if comparator:
             if not self.stop_event.is_set():
@@ -7308,6 +7864,10 @@ class FullBookCompareWorker(QObject):
                 return
 
             client = genai.Client(api_key=api_key)
+            try:
+                register_stop_component("clients", client)
+            except Exception:
+                pass
             self.progress.emit("رفع PDF الأصلي بالكامل...")
             try:
                 # display_name يجب أن يكون ASCII لتجنّب UnicodeEncodeError على Windows
@@ -7661,6 +8221,14 @@ class FullBookCompareDialog(QDialog):
             self._worker.stop()
             self.status.setText("⏹️ طُلب الإيقاف...")
             self.btn_stop.setEnabled(False)
+            try:
+                threading.Thread(
+                    target=request_stop,
+                    kwargs={"timeout": 10.0, "log_fn": safe_print},
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                safe_print(f"[request_stop] {e}")
 
     def _on_progress(self, msg: str):
         if getattr(self, '_closing', False):
@@ -8003,7 +8571,10 @@ class MultiBookParallelOrchestrator:
 
     def _wait_if_paused(self):
         while self.pause_event.is_set() and not self.stop_event.is_set():
-            time.sleep(0.2)
+            try:
+                interruptible_sleep(0.2, self.stop_event)
+            except InterruptedError:
+                break
 
     def _lane_log(self, lane_id: int, msg: str):
         self.on_log(f"[مسار {lane_id}] {msg}")
@@ -8527,6 +9098,10 @@ class ProcessingWorker(QObject):
             checkpoints_dir.mkdir(parents=True, exist_ok=True)
             ckpt = Checkpoint(checkpoints_dir / "checkpoint.json")
             try:
+                register_stop_component("checkpoints", ckpt)
+            except Exception:
+                pass
+            try:
                 custom_ranges = None
                 custom_ranges_exact = False
                 if is_txt:
@@ -8564,6 +9139,10 @@ class ProcessingWorker(QObject):
             except Exception as e:
                 self._emit_log_safe(f"💥 مفاتيح {in_path.name}: {e}")
                 continue
+            try:
+                register_stop_component("keypools", pool)
+            except Exception:
+                pass
 
             pending = []
             completed = detect_completed_part_indices(
@@ -8590,6 +9169,10 @@ class ProcessingWorker(QObject):
                         api_keys=api_keys, global_key_mgr=self.global_key_mgr,
                         parallel_workers=w, request_counter=self.request_counter)
                     comparator.start()
+                    try:
+                        register_stop_component("comparators", comparator)
+                    except Exception:
+                        pass
                 except Exception as e:
                     self._emit_log_safe(f"⚠️ مقارن {in_path.name}: {e}")
 
@@ -8656,7 +9239,7 @@ QPushButton#dangerBtn { background-color: #f38ba8; color: #1e1e2e; border: none;
 QPushButton#dangerBtn:hover { background-color: #eba0ac; }
 QPushButton#successBtn { background-color: #a6e3a1; color: #1e1e2e; border: none; }
 QPushButton#successBtn:hover { background-color: #94e2d5; }
-/* ✅ v27.7: زر البدء أخضر لامع بخط أبيض أثقل وأكبر بثلاث نقاط. */
+/* ✅ v27.8: زر البدء أخضر لامع بخط أبيض أثقل وأكبر بثلاث نقاط. */
 QPushButton#startBtn { background-color: #00ff7f; color: #1a1a2e; border: 1px solid #a6ffcb; font-weight: 900; font-size: 16pt; min-height: 34px; }
 QPushButton#startBtn:hover { background-color: #19f283; border-color: #d8ffe8; }
 QPushButton#startBtn:pressed { background-color: #00a855; }
@@ -8853,7 +9436,7 @@ class NoKeysWelcomeDialog(QDialog):
             self.setFont(QApplication.font())
         except Exception:
             self.setFont(QFont("Tahoma, Segoe UI, Arial", 10))
-        header = QLabel("👋 <b>مرحباً بك في PDF Master Pro v7.7!</b>")
+        header = QLabel("👋 <b>مرحباً بك في PDF Master Pro v8.2!</b>")
         header_font = QFont(self.font())
         header_font.setPointSize(21)
         header_font.setBold(True)
@@ -9731,14 +10314,15 @@ class CompareResultsDiskDialog(QDialog):
         title.setObjectName("headerLabel")
         layout.addWidget(title)
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["جزء", "صفحات", "تقييم", "تغطية%", "فجوات", "إجراءات"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["جزء", "صفحات", "تقييم", "تغطية%", "فجوات"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for i in (0, 2, 3, 4, 5):
+        for i in (0, 2, 3, 4):
             self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        _install_part_context_menu(self.table, self, idx_col=0)
         layout.addWidget(self.table, 1)
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
@@ -9791,11 +10375,6 @@ class CompareResultsDiskDialog(QDialog):
                 cov.setForeground(QColor('#f38ba8'))
             self.table.setItem(row, 3, cov)
             self.table.setItem(row, 4, QTableWidgetItem(str(len(r.missing_items))))
-            try:
-                btn = _make_part_actions_button(self, int(r.shard_idx))
-                self.table.setCellWidget(row, 5, btn)
-            except Exception:
-                self.table.setItem(row, 5, QTableWidgetItem("⚙️"))
         self.table.setUpdatesEnabled(True)
         if results:
             self.table.selectRow(0)
@@ -9864,8 +10443,8 @@ class CompareNotebookDialog(QDialog):
         layout.setSpacing(10)
 
         info = QLabel(
-            f"📁 يقرأ المقارنات مباشرة من مجلد الوجهة الحالي:<br><b>{output_dir}</b><br>"
-            f"💡 يتم استيراد النتائج من partial.json / final.json حتى لو كانت موجودة قبل إنشاء السجل.")
+            "📁 يقرأ المقارنات من المجلدات والمسارات المعروفة المسجلة تلقائياً أو يدوياً.<br>"
+            "💡 يتم استيراد النتائج من partial.json / final.json بمجرد اختيار الكتاب.")
         info.setWordWrap(True)
         info.setStyleSheet(
             "background-color: #181825; border: 1px solid #45475a;"
@@ -9880,6 +10459,11 @@ class CompareNotebookDialog(QDialog):
         self.stats_label = QLabel("—")
         self.stats_label.setObjectName("statLabel")
         top_row.addWidget(self.stats_label)
+        
+        btn_manage_roots = QPushButton("⚙️ إدارة المسارات المعروفة")
+        btn_manage_roots.clicked.connect(self._open_roots_manager)
+        top_row.addWidget(btn_manage_roots)
+
         btn_refresh = QPushButton("🔄 تحديث")
         btn_refresh.setObjectName("primaryBtn")
         btn_refresh.clicked.connect(self.refresh_books)
@@ -9908,15 +10492,17 @@ class CompareNotebookDialog(QDialog):
         table_detail_split.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         table_detail_split.setChildrenCollapsible(False)
         self.compare_table_disk = QTableWidget()
-        self.compare_table_disk.setColumnCount(6)
+        self.compare_table_disk.setColumnCount(5)
         self.compare_table_disk.setHorizontalHeaderLabels(
-            ["جزء", "صفحات", "تقييم", "تغطية%", "فجوات", "إجراءات"])
+            ["جزء", "صفحات", "تقييم", "تغطية%", "فجوات"])
         self.compare_table_disk.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.compare_table_disk.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.compare_table_disk.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for i in (0, 2, 3, 4, 5):
+        for i in (0, 2, 3, 4):
             self.compare_table_disk.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
         self.compare_table_disk.itemSelectionChanged.connect(self._on_result_selected)
+        self.compare_table_disk.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.compare_table_disk.customContextMenuRequested.connect(self._on_compare_table_disk_context_menu)
         table_detail_split.addWidget(self.compare_table_disk)
         self.detail_text = QTextEdit()
         self.detail_text.setReadOnly(True)
@@ -9936,6 +10522,8 @@ class CompareNotebookDialog(QDialog):
         lv.addWidget(list_title)
         self.books_list = QListWidget()
         self.books_list.currentRowChanged.connect(self._on_book_selected)
+        self.books_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.books_list.customContextMenuRequested.connect(self._on_books_list_context_menu)
         lv.addWidget(self.books_list, 1)
         actions = QHBoxLayout()
         self.btn_load_selected_compare = QPushButton("📂 تحميل الكتاب")
@@ -9960,9 +10548,19 @@ class CompareNotebookDialog(QDialog):
         # قراءة المقارنات المباشرة بالنمط الموثوق الأصلي
         self.refresh_books()
 
+    def _open_roots_manager(self):
+        dlg = KnownRootsManagerDialog(self)
+        dlg.exec()
+        self.refresh_books()
+
     def refresh_books(self):
         query = self.search_edit.text().strip().lower()
-        discovered = self.main_window._discover_processed_books(self.output_dir)
+        self.main_window.roots_manager.cleanup_unreachable()
+        roots_info = self.main_window.roots_manager.get_all_roots()
+        roots = [Path(r["path"]) for r in roots_info]
+        if Path(self.output_dir) not in roots:
+            roots.append(Path(self.output_dir))
+        discovered = self.main_window._discover_processed_books_multi(roots, force_refresh=True)
         self.books = [
             b for b in discovered
             if has_saved_compare_data(Path(b.get("data_dir")) / "compare") or has_saved_compare_data(Path(b.get("data_dir"))) or b.get("has_compare")
@@ -9977,8 +10575,11 @@ class CompareNotebookDialog(QDialog):
                 QApplication.processEvents()
             coverage = int(book.get("avg_coverage") or 0)
             weak = int(book.get("weak_count") or 0)
+            root_dir_path = book.get('root_dir')
+            root_dir_str = str(root_dir_path) if root_dir_path else "—"
+            root_name = Path(root_dir_str).name or root_dir_str
             item = QListWidgetItem(
-                f"📄 {book.get('book_stem', '')}\n"
+                f"📄 {book.get('book_stem', '')} [{root_name}]\n"
                 f"التغطية: {coverage}% | الضعيف: {weak} | آخر تعديل: {book.get('last_modified', '—')}")
             color = coverage_color(coverage)
             item.setForeground(QBrush(QColor(color)))
@@ -9989,7 +10590,7 @@ class CompareNotebookDialog(QDialog):
         if self.books:
             self.books_list.setCurrentRow(0)
         else:
-            self._render_empty_compare_state("لا توجد مقارنات محفوظة في مجلد الوجهة الحالي.")
+            self._render_empty_compare_state("لا توجد مقارنات محفوظة في المسارات المعروفة.")
 
     def _on_books_load_failed(self, err: str):
         self._is_loading = False
@@ -10017,6 +10618,7 @@ class CompareNotebookDialog(QDialog):
             return
         book = self.books[row]
         self._current_book = book
+        self._current_book_root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
         self.detail_title.setText(f"📘 {book.get('book_stem', '')}")
         self.detail_summary.setText("⏳ جارٍ تحميل نتائج المقارنة...")
         self.compare_table_disk.setRowCount(0)
@@ -10024,10 +10626,45 @@ class CompareNotebookDialog(QDialog):
         # ✅ v4.4: اترك النافذة تظهر أولاً ثم حمّل JSON؛ يمنع تهنيج فتح سجل المقارنة.
         QTimer.singleShot(30, lambda b=book: self._load_compare_book_deferred(b))
 
+    def _on_books_list_context_menu(self, pos):
+        """✅ قائمة سياقية على اسم الكتاب في سجل المقارنة: حذف الكتاب."""
+        row = self.books_list.row(self.books_list.itemAt(pos))
+        if row < 0 or row >= len(self.books):
+            return
+        book = self.books[row]
+        self.books_list.setCurrentRow(row)
+        menu = QMenu(self.books_list)
+        menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        act_del = menu.addAction("🗑️ حذف الكتاب")
+        act_del.triggered.connect(lambda: self._delete_book(book))
+        menu.exec(self.books_list.viewport().mapToGlobal(pos))
+
+    def _delete_book(self, book: dict):
+        book_stem = str(book.get("book_stem") or "")
+        ans = QMessageBox.question(
+            self, "تأكيد الحذف",
+            f"🗑️ هل تريد حذف الكتاب التالي نهائياً من القرص؟\n\n"
+            f"{book_stem}\n\n"
+            f"سيتم حذف كل بياناته (الأجزاء، نتائج المقارنة، الاستخراج) ولا يمكن التراجع.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            data_dir = book.get("data_dir")
+            if data_dir:
+                dpath = Path(data_dir)
+                if dpath.exists():
+                    shutil.rmtree(dpath, ignore_errors=True)
+        except Exception as e:
+            QMessageBox.warning(self, "خطأ", f"تعذر حذف بيانات الكتاب: {e}")
+        self.refresh_books()
+
     def _load_compare_book_deferred(self, book: dict):
         try:
             if self._current_book is not book:
                 return
+            root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
+            self._current_book_root = root
             compare_dir = Path(book.get("data_dir")) / "compare"
             self._current_partial_results = load_partial_compare_results_file(compare_dir / "partial.json")
             total_shards = int(book.get("parts_count") or len(self._current_partial_results) or 0)
@@ -10092,15 +10729,6 @@ class CompareNotebookDialog(QDialog):
                 cov_item.setForeground(QColor("#f38ba8"))
             self.compare_table_disk.setItem(row, 3, cov_item)
             self.compare_table_disk.setItem(row, 4, QTableWidgetItem(str(len(r.missing_items))))
-            try:
-                btn = QPushButton("⚙️")
-                btn.setToolTip("فتح / إعادة مقارنة / إعادة استخراج")
-                btn.setMinimumWidth(48)
-                idx_here = r.shard_idx
-                btn.clicked.connect(lambda _checked, i=idx_here: self._show_disk_part_actions(i))
-                self.compare_table_disk.setCellWidget(row, 5, btn)
-            except Exception:
-                self.compare_table_disk.setItem(row, 5, QTableWidgetItem("⚙️"))
         self.compare_table_disk.setUpdatesEnabled(True)
         if results:
             self.compare_table_disk.selectRow(0)
@@ -10128,17 +10756,37 @@ class CompareNotebookDialog(QDialog):
         self.detail_text.setPlainText("".join(parts))
 
     def _show_disk_part_actions(self, idx: int):
-        """تحميل سياق الكتاب المحدد ثم فتح نفس قائمة إجراءات الجزء الموجودة في نتائج المقارنة."""
+        """تحميل سياق الكتاب المحدد ثم عرض قائمة إجراءات الجزء (فتح المستخرج/الأصل، إعادة مقارنة/استخراج)."""
         book = self._selected_book()
         if not book:
             QMessageBox.information(self, "ℹ️", "اختر كتاباً أولاً.")
-            return
+            return None
+        root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
         try:
-            self.main_window._load_previous_book(str(book.get("book_stem") or ""), self.output_dir, silent=True)
+            self.main_window._load_previous_book(str(book.get("book_stem") or ""), root, silent=True)
         except Exception:
             pass
+        return self.main_window
+
+    def _on_compare_table_disk_context_menu(self, pos):
+        """✅ قائمة سياقية (زر الفأرة الأيمن) بديلة لعمود 'إجراءات' في جدول نتائج المقارنة من القرص."""
+        row = self.compare_table_disk.rowAt(pos.y())
+        if row < 0:
+            return
         try:
-            self.main_window._show_part_actions_menu(int(idx))
+            it = self.compare_table_disk.item(row, 0)
+            shard_idx = int(it.text()) if it else None
+        except Exception:
+            shard_idx = None
+        if shard_idx is None:
+            return
+        self.compare_table_disk.selectRow(row)
+        mw = self._show_disk_part_actions(shard_idx)
+        if mw is None:
+            return
+        try:
+            menu = _build_part_actions_menu(mw, shard_idx)
+            menu.exec(self.compare_table_disk.viewport().mapToGlobal(pos))
         except Exception as e:
             QMessageBox.warning(self, "خطأ", str(e))
 
@@ -10147,7 +10795,8 @@ class CompareNotebookDialog(QDialog):
         if not book:
             QMessageBox.information(self, "ℹ️", "اختر ملفاً أولاً.")
             return
-        if self.main_window._load_previous_book(str(book.get("book_stem") or ""), self.output_dir):
+        root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
+        if self.main_window._load_previous_book(str(book.get("book_stem") or ""), root):
             QMessageBox.information(self, "✅", f"تم تحميل الكتاب: {book.get('book_stem', '')}")
 
     def _open_selected_final(self):
@@ -10155,6 +10804,7 @@ class CompareNotebookDialog(QDialog):
         if not book:
             QMessageBox.information(self, "ℹ️", "اختر ملفاً أولاً.")
             return
+        root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
         final_file = book.get("final_file")
         if final_file and Path(final_file).exists():
             self.main_window._open_path(str(final_file))
@@ -10162,15 +10812,127 @@ class CompareNotebookDialog(QDialog):
             QMessageBox.information(self, "ℹ️", "لا يوجد ملف ناتج محفوظ لهذا العنصر.")
 
 
+class KnownRootsManagerDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.main_window = parent.main_window if hasattr(parent, "main_window") else parent
+        self.parent_dlg = parent
+        self.setWindowTitle("⚙️ إدارة المسارات المعروفة (Roots)")
+        self.resize(750, 420)
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setStyleSheet(DARK_STYLE)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        
+        layout.addWidget(QLabel("📂 قائمة مجلدات الإخراج المعروفة (يتم البحث فيها تلقائياً عن كتبك السابقة):"))
+        
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["المجلد", "تاريخ الاستخدام", "الحالة"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in [1, 2]:
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_root_context_menu)
+            
+        layout.addWidget(self.table, 1)
+        
+        row = QHBoxLayout()
+        btn_add = QPushButton("📁 إضافة مسار يدوياً")
+        btn_add.setObjectName("primaryBtn")
+        btn_add.clicked.connect(self._add_root_manually)
+        row.addWidget(btn_add)
+        
+        btn_cleanup = QPushButton("🧹 تنظيف المسارات غير المتاحة")
+        btn_cleanup.clicked.connect(self._cleanup_unreachable)
+        row.addWidget(btn_cleanup)
+        
+        row.addStretch(1)
+        btn_close = QPushButton("إغلاق")
+        btn_close.clicked.connect(self.accept)
+        row.addWidget(btn_close)
+        layout.addLayout(row)
+        
+        self.refresh_roots()
+        
+    def refresh_roots(self):
+        roots = self.main_window.roots_manager.get_all_roots()
+        self.table.setRowCount(len(roots))
+        for row, r in enumerate(roots):
+            p_str = r.get("path", "")
+            item_path = QTableWidgetItem(p_str)
+            item_path.setToolTip(p_str)
+            self.table.setItem(row, 0, item_path)
+            
+            item_used = QTableWidgetItem(format_timestamp_human_iso(r.get("last_used", "")))
+            self.table.setItem(row, 1, item_used)
+            
+            exists = False
+            try:
+                exists = Path(p_str).exists()
+            except Exception:
+                pass
+            status_item = QTableWidgetItem("✅ متاح" if exists else "❌ غير متاح")
+            if exists:
+                status_item.setForeground(QColor("#a6e3a1"))
+            else:
+                status_item.setForeground(QColor("#f38ba8"))
+            self.table.setItem(row, 2, status_item)
+            
+    def _on_root_context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        it = self.table.item(row, 0)
+        if it is None:
+            return
+        p_str = it.text()
+        self.table.selectRow(row)
+        menu = QMenu(self.table)
+        menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        act_del = menu.addAction("🗑️ حذف المسار")
+        act_del.triggered.connect(lambda: self._remove_root(p_str))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+            
+    def _add_root_manually(self):
+        d = QFileDialog.getExistingDirectory(self, "اختر مجلد مخرجات لإضافته للمسارات المعروفة")
+        if d:
+            self.main_window.roots_manager.add_or_update_root(d)
+            self.refresh_roots()
+            if hasattr(self.parent_dlg, "refresh_books"):
+                self.parent_dlg.refresh_books()
+                
+    def _cleanup_unreachable(self):
+        self.main_window.roots_manager.cleanup_unreachable()
+        self.refresh_roots()
+        if hasattr(self.parent_dlg, "refresh_books"):
+            self.parent_dlg.refresh_books()
+            
+    def _remove_root(self, path):
+        ans = QMessageBox.question(
+            self, "تأكيد الحذف",
+            f"🗑️ هل تريد حذف هذا المسار من قائمة المسارات المعروفة؟\n\n{path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self.main_window.roots_manager.remove_root(path)
+        self.refresh_roots()
+        if hasattr(self.parent_dlg, "refresh_books"):
+            self.parent_dlg.refresh_books()
+
+
 class BookLibraryDialog(QDialog):
-    # ✅ v27.0: نافذة مكتبة الكتب السابقة المحفوظة على القرص
     def __init__(self, parent, output_dir: Path):
         super().__init__(parent)
         self.main_window = parent
         self.output_dir = output_dir
         self.books: List[dict] = []
         self.setWindowTitle('📚 مكتبة الكتب السابقة')
-        self.resize(1100, 640)
+        self.resize(1200, 640)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setStyleSheet(DARK_STYLE)
         layout = QVBoxLayout(self)
@@ -10183,24 +10945,28 @@ class BookLibraryDialog(QDialog):
         self.stats_label = QLabel('—')
         top.addWidget(self.stats_label)
         top.addStretch(1)
+        
+        btn_manage_roots = QPushButton("⚙️ إدارة المسارات المعروفة")
+        btn_manage_roots.clicked.connect(self._open_roots_manager)
+        top.addWidget(btn_manage_roots)
+        
         btn_refresh = QPushButton('🔄 تحديث القائمة')
         btn_refresh.setObjectName('primaryBtn')
         btn_refresh.clicked.connect(self.refresh_books)
         top.addWidget(btn_refresh)
         layout.addLayout(top)
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(['الكتاب', 'الأجزاء', 'متوسط التغطية%', 'أجزاء ضعيفة', 'آخر تعديل', 'إجراءات'])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(['الكتاب', 'الأجزاء', 'متوسط التغطية%', 'أجزاء ضعيفة', 'آخر تعديل', 'المجلد', 'إجراءات'])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col in [1, 2, 3, 4]:
+        for col in [1, 2, 3, 4, 5]:
             self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        # ✅ أعطِ اسم الكتاب أكبر مساحة، وقلّل عمودي متوسط التغطية/الأجزاء الضعيفة.
         self.table.setColumnWidth(2, 90)
         self.table.setColumnWidth(3, 80)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(5, 500)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(6, 480)
         self.table.verticalHeader().setDefaultSectionSize(52)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(lambda _r, _c: self._load_selected_book())
@@ -10212,10 +10978,24 @@ class BookLibraryDialog(QDialog):
         self.stats_label.setText("⏳ جارٍ مسح المكتبة...")
         QTimer.singleShot(40, self.refresh_books)
 
+    def _open_roots_manager(self):
+        dlg = KnownRootsManagerDialog(self)
+        dlg.exec()
+        self.refresh_books()
+
     def refresh_books(self):
         self.stats_label.setText("⏳ جارٍ اكتشاف الكتب...")
         QApplication.processEvents()
-        self.books = self.main_window._discover_processed_books(self.output_dir)
+        
+        self.main_window.roots_manager.cleanup_unreachable()
+        roots_info = self.main_window.roots_manager.get_all_roots()
+        roots = [Path(r["path"]) for r in roots_info]
+        
+        current_out = Path(self.output_dir)
+        if current_out not in roots:
+            roots.append(current_out)
+            
+        self.books = self.main_window._discover_processed_books_multi(roots, force_refresh=True)
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(len(self.books))
         self.table.verticalHeader().setDefaultSectionSize(52)
@@ -10237,8 +11017,14 @@ class BookLibraryDialog(QDialog):
             self.table.setItem(row, 2, cov_item)
             self.table.setItem(row, 3, QTableWidgetItem(str(book.get('weak_count') or 0)))
             self.table.setItem(row, 4, QTableWidgetItem(str(book.get('last_modified') or '—')))
+            
+            root_dir_path = book.get('root_dir')
+            root_dir_str = str(root_dir_path) if root_dir_path else "—"
+            item_root = QTableWidgetItem(Path(root_dir_str).name or root_dir_str)
+            item_root.setToolTip(root_dir_str)
+            self.table.setItem(row, 5, item_root)
+            
             actions = QWidget()
-            # ✅ v27.7: مساحة أفقية ثابتة للأزرار حتى لا تتداخل أو تختفي داخل الخلية.
             actions.setMinimumWidth(480)
             actions_layout = QHBoxLayout(actions)
             actions_layout.setContentsMargins(4, 4, 4, 4)
@@ -10258,7 +11044,7 @@ class BookLibraryDialog(QDialog):
             actions_layout.addWidget(btn_compare)
             actions_layout.addStretch(1)
             self.table.setRowHeight(row, 52)
-            self.table.setCellWidget(row, 5, actions)
+            self.table.setCellWidget(row, 6, actions)
         self.table.setUpdatesEnabled(True)
         self.stats_label.setText(f"📚 الكتب المكتشفة: {len(self.books)}")
 
@@ -10274,7 +11060,8 @@ class BookLibraryDialog(QDialog):
             self._load_book(book)
 
     def _load_book(self, book: dict):
-        if self.main_window._load_previous_book(str(book.get('book_stem') or ''), self.output_dir):
+        root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
+        if self.main_window._load_previous_book(str(book.get('book_stem') or ''), root):
             QMessageBox.information(self, '✅', f"تم تحميل الكتاب: {book.get('book_stem', '')}")
 
     def _open_final(self, book: dict):
@@ -10292,8 +11079,9 @@ class BookLibraryDialog(QDialog):
             return
         total_shards = int(book.get('parts_count') or len(partial))
         summary = load_final_compare_summary_file(compare_dir, partial, total_shards)
+        root = Path(book.get('root_dir')) if book.get('root_dir') else self.output_dir
         try:
-            self.main_window._load_previous_book(str(book.get('book_stem') or ''), self.output_dir, silent=True)
+            self.main_window._load_previous_book(str(book.get('book_stem') or ''), root, silent=True)
         except Exception:
             pass
         dlg = CompareResultsDiskDialog(self.main_window, str(book.get('book_stem') or ''), partial, summary)
@@ -10526,6 +11314,8 @@ class MainWindow(QMainWindow):
         self.history_manager = HistoryManager(
             app_dir,
             max_records_getter=lambda: self.settings.get("history_max_records", 500))
+        self.roots_manager = KnownRootsManager(app_dir)
+        self._run_roots_migration_if_needed()
         self.tokens_path = app_dir / self.settings.get("tokens_file", "tokens.txt")
         if not self.tokens_path.exists():
             self.tokens_path.touch()
@@ -10577,6 +11367,10 @@ class MainWindow(QMainWindow):
         self._book_run_contexts: Dict[int, dict] = {}
         self._request_count = 0
         self._keys_used: Set[str] = set()
+        # ✅ v8.2: تخزين الإجراءات المعلقة لكل كتاب (استكمال، إعادة استخراج، إلخ)
+        self._pending_book_actions: Dict[str, str] = {}
+        # ✅ v8.2: الكتب النشطة في الجلسة الحالية
+        self._active_run_files: List[Path] = []
         # ✅ v29.10: نطاقات مخصصة مؤقتة لكل ملف (لا تُحفظ في الإعدادات).
         self._file_custom_splits: Dict[str, str] = {}
         self._file_custom_batches: Dict[str, str] = {}
@@ -10606,7 +11400,7 @@ class MainWindow(QMainWindow):
         self._midnight_timer.start(60_000)
 
         self.setWindowTitle(
-            f"🌟 PDF Master Pro v7.7 — Personal Edition - Parallel Extraction Edition ({PDF_BACKEND})")
+            f"🌟 PDF Master Pro v9.1 — Personal Edition - Parallel Extraction Edition ({PDF_BACKEND})")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1500, 900)
 
@@ -10638,13 +11432,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"✅ جاهز | PDF backend: {PDF_BACKEND} | "
             f"الحظر: {self.global_key_mgr.get_blocked_summary()}")
-        QTimer.singleShot(100, self._auto_restore_last_session)
-
         if PDF_BACKEND == "builtin":
             QMessageBox.information(self, "💡 نصيحة",
                 "تستخدم backend المدمج (أقل كفاءة).\n\n"
-                "للحصول على أفضل أداء:\n  pip install pdfrw\n"
-                "  أو:\n  pip install pypdf")
+                "للحصول على أفضل أداء:\n  pip install pikepdf\n"
+                "  أو:\n  pip install pypdf\n"
+                "  أو:\n  pip install pdfrw")
+        QTimer.singleShot(100, self._auto_restore_last_session)
+
 
         QTimer.singleShot(300, self._check_keys_on_startup)
 
@@ -10805,6 +11600,13 @@ class MainWindow(QMainWindow):
         self._options_panel_visible = True
         self._saved_top_sizes = None
         self._syncing_splitters = False
+        # ✅ إصلاح: دوال حفظ/استعادة مقاسات المنزلقات (_persist_splitter_sizes,
+        # _restore_splitter_sizes) كانت تشير لأسماء splitters غير موجودة أصلاً
+        # (top_hsplit / bottom_hsplit / outer_vsplit) فلا تحفظ ولا تستعيد شيئاً
+        # أبداً. هذه أسماء بديلة (نفس الكائنات الفعلية) لتفعيل ذلك المنطق.
+        self.top_hsplit = self.main_hsplit
+        self.bottom_hsplit = self.main_hsplit
+        self.outer_vsplit = self.right_vsplit
         
         self.setStatusBar(QStatusBar())
         self.setMinimumSize(780, 560)
@@ -11164,7 +11966,7 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_options_tab(self) -> QWidget:
-        # ✅ v27.7: تقسيم تبويب الخيارات إلى تبويبات فرعية لتقليل الطول الرأسي بدون حذف أي عنصر.
+        # ✅ v27.8: تقسيم تبويب الخيارات إلى تبويبات فرعية لتقليل الطول الرأسي بدون حذف أي عنصر.
         w = QWidget()
         outer = QVBoxLayout(w)
         outer.setContentsMargins(4, 6, 4, 4); outer.setSpacing(4)
@@ -11244,7 +12046,7 @@ class MainWindow(QMainWindow):
         paths_group = QGroupBox("📁 مسار الحفظ")
         pg = QVBoxLayout(paths_group)
         pg.setSpacing(7); pg.setContentsMargins(10, 18, 10, 10)
-        # ✅ v27.7: جعل أزرار المسارات واضحة وتحت لابل الإخراج بدل أيقونات صغيرة بجانب الحقل.
+        # ✅ v27.8: جعل أزرار المسارات واضحة وتحت لابل الإخراج بدل أيقونات صغيرة بجانب الحقل.
         out_label = QLabel("الإخراج:")
         pg.addWidget(out_label)
         out_row = QHBoxLayout()
@@ -11264,7 +12066,7 @@ class MainWindow(QMainWindow):
         btn_parts_viewer.clicked.connect(self._on_open_parts_viewer)
         path_buttons_row.addWidget(btn_parts_viewer)
         pg.addLayout(path_buttons_row)
-        # ✅ v27.7: لا أزرار مكتبة/سجل هنا؛ الوصول لها باقٍ داخل شاشة إعادة الفحص.
+        # ✅ v27.8: لا أزرار مكتبة/سجل هنا؛ الوصول لها باقٍ داخل شاشة إعادة الفحص.
         files_v.addWidget(paths_group)
 
         extract_group = QGroupBox("📝 خيارات الاستخراج (للـ PDF فقط)")
@@ -11300,7 +12102,7 @@ class MainWindow(QMainWindow):
         eg.addWidget(self.cb_enable_sharding)
         self.cb_keep_shards = QCheckBox("💾 الاحتفاظ بالأجزاء بعد الانتهاء")
         eg.addWidget(self.cb_keep_shards)
-        # ✅ v27.7: تجميع الخيارات النادرة في قسم قابل للطي مع إبقاء بقية خيارات الاستخراج ظاهرة.
+        # ✅ v27.8: تجميع الخيارات النادرة في قسم قابل للطي مع إبقاء بقية خيارات الاستخراج ظاهرة.
         advanced_group = QGroupBox("⚙️ خيارات متقدمة")
         advanced_group.setCheckable(True)
         advanced_group.setChecked(False)
@@ -11726,6 +12528,16 @@ class MainWindow(QMainWindow):
         cfg_layout.addRow(self._mk_label("🤖 نموذج المقارنة:"),
                             self.compare_model_combo)
 
+        # ✅ نموذج الاستخراج ونموذج المقارنة منفصلان تماماً ولا يُزامَنان تلقائياً.
+        # هذا الزر هو الوسيلة الوحيدة الصريحة لنسخ نموذج الاستخراج إلى نموذج المقارنة.
+        self.btn_copy_extract_model_to_compare = QPushButton(
+            "📋 اجعل نموذج المقارنة مطابقاً لنموذج الاستخراج")
+        self.btn_copy_extract_model_to_compare.setToolTip(
+            "نسخ صريح لمرة واحدة: model_id → compare_model_id. لن يحدث أي تزامن تلقائي بعد الآن.")
+        self.btn_copy_extract_model_to_compare.clicked.connect(
+            self._on_copy_extract_model_to_compare)
+        cfg_layout.addRow("", self.btn_copy_extract_model_to_compare)
+
         self.compare_workers_spin = QSpinBox()
         self.compare_workers_spin.setRange(1, 25)
         self.compare_workers_spin.setMinimumWidth(80)
@@ -11851,21 +12663,20 @@ class MainWindow(QMainWindow):
         chooser_row.addStretch(1)
         v.addLayout(chooser_row)
         self.partial_compare_table = QTableWidget()
-        self.partial_compare_table.setColumnCount(6)
+        self.partial_compare_table.setColumnCount(5)
         self.partial_compare_table.setHorizontalHeaderLabels(
-            ["جزء", "صفحات", "تغطية%", "فجوات", "ملاحظات", "إجراءات"])
+            ["جزء", "صفحات", "تغطية%", "فجوات", "ملاحظات"])
         self.partial_compare_table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.ResizeMode.Stretch)
         for i in range(4):
             self.partial_compare_table.horizontalHeader().setSectionResizeMode(
                 i, QHeaderView.ResizeMode.ResizeToContents)
-        self.partial_compare_table.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.ResizeToContents)
         self.partial_compare_table.setMinimumHeight(80)
         self.partial_compare_table.setWordWrap(True)
         self.partial_compare_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.partial_compare_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.partial_compare_table.cellClicked.connect(self._on_partial_compare_clicked)
+        _install_part_context_menu(self.partial_compare_table, self, idx_col=0)
         v.addWidget(self.partial_compare_table, 1)
 
         # ─── تفاصيل الجزء المختار ───
@@ -12040,10 +12851,14 @@ class MainWindow(QMainWindow):
         models = self._get_active_models_list() or DEFAULT_MODELS
         for m in models:
             self.compare_model_combo.addItem(m["label"], m)
-        if current_id:
+        # ✅ إصلاح: عند أول بناء للقائمة (لا يوجد اختيار حالي بعد) كانت الدالة
+        # تتجاهل القيمة المحفوظة في الإعدادات وتفتح دائماً على أول نموذج في
+        # القائمة. الآن تُطابق نفس منطق _populate_model_combo (نموذج الاستخراج).
+        target_id = current_id or self.settings.get("compare_model_id")
+        if target_id:
             for i in range(self.compare_model_combo.count()):
                 d = self.compare_model_combo.itemData(i)
-                if d and d.get("id") == current_id:
+                if d and d.get("id") == target_id:
                     self.compare_model_combo.setCurrentIndex(i)
                     return
 
@@ -12058,6 +12873,19 @@ class MainWindow(QMainWindow):
             if d and d.get("id") == md.get("id"):
                 self.compare_model_combo.setCurrentIndex(i)
                 break
+
+    def _on_copy_extract_model_to_compare(self):
+        """✅ نسخ صريح بضغطة زر فقط: model_id → compare_model_id.
+        لا يُستدعى تلقائياً من أي مكان آخر في التطبيق."""
+        self._sync_compare_model_to_extract()
+        try:
+            self.settings.copy_extraction_model_to_compare()
+        except Exception as e:
+            safe_print(f"[copy_extract_model_to_compare] {e}")
+        try:
+            self._append_log("📋 تم نسخ نموذج الاستخراج إلى نموذج المقارنة (بطلب صريح من المستخدم).")
+        except Exception:
+            pass
 
     def _build_help_tab(self) -> QWidget:
         w = QWidget()
@@ -12217,6 +13045,23 @@ class MainWindow(QMainWindow):
         except Exception as e:
             safe_print(f"bottom hsplit sync: {e}")
 
+    def _refresh_tab_bars_after_splitter(self):
+        """✅ إصلاح: إجبار كل التبويبات (الخيارات/الإعدادات/المفاتيح...) على
+        إعادة حساب وطلاء شريط تبويباتها. بدون هذا، كانت بعض التبويبات تختفي
+        بصرياً بعد إخفاء/إظهار لوحة الخيارات أو التنقل المتكرر لشاشة المقارنة،
+        ولا تعود للظهور إلا بعد تحريك المنزلق يدوياً (كان هذا الكود موجوداً
+        سابقاً في نسخة مكرّرة من _on_splitter_moved تم تجاوزها بالكامل بتعريف
+        لاحق بنفس الاسم فلم تُنفَّذ أبداً)."""
+        for tab_widget in [getattr(self, "main_tabs", None)] + getattr(self, "_sub_tabs_list", []):
+            try:
+                if tab_widget and tab_widget.isVisible() and tab_widget.tabBar():
+                    tab_widget.tabBar().updateGeometry()
+                    tab_widget.tabBar().update()
+                    tab_widget.updateGeometry()
+                    tab_widget.update()
+            except Exception:
+                pass
+
     def _on_outer_vsplit_moved(self, pos=0, index=0):
         """
         ✅ الحد الفاصل الأفقي: يغيّر ارتفاع الصف العلوي (خيارات+عرض) معاً
@@ -12242,6 +13087,7 @@ class MainWindow(QMainWindow):
                         bot, top = floor_bot, total - floor_bot
                         self.outer_vsplit.setSizes([top, bot])
             self._schedule_persist_splitters()
+            self._refresh_tab_bars_after_splitter()
         except Exception as e:
             safe_print(f"outer vsplit: {e}")
 
@@ -12250,6 +13096,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_closing", False):
             return
         self._schedule_persist_splitters()
+        self._refresh_tab_bars_after_splitter()
 
     def _restore_splitter_sizes(self):
         """استعادة المقاسات مع فرض تساوي عرض العمودين."""
@@ -12440,14 +13287,23 @@ class MainWindow(QMainWindow):
             return self._current_output_dir
         return None
 
-    def _discover_processed_books(self, output_dir: Path, force_refresh: bool = False) -> List[dict]:
-        # ✅ v4.5: اكتشاف فائق السرعة مع تخزين مؤقت للنتائج وفحص خفيف للقرص
+    def _discover_processed_books_multi(self, roots: List[Path], force_refresh: bool = False) -> List[dict]:
         if not hasattr(self, "_books_discovery_cache"):
             self._books_discovery_cache = {}
 
-        output_dir_p = Path(output_dir)
-        cache_key = str(output_dir_p.resolve())
         now = time.time()
+        valid_roots = []
+        for r in roots:
+            try:
+                r_path = Path(r)
+                if r_path.exists():
+                    valid_roots.append(r_path)
+            except Exception:
+                pass
+                
+        resolved_strs = sorted(list(set(str(r.resolve()) for r in valid_roots)))
+        combined_str = ",".join(resolved_strs)
+        cache_key = hashlib.md5(combined_str.encode("utf-8", errors="replace")).hexdigest() if combined_str else "empty_roots"
 
         if not force_refresh and cache_key in self._books_discovery_cache:
             cache_time, cached_books = self._books_discovery_cache[cache_key]
@@ -12456,90 +13312,97 @@ class MainWindow(QMainWindow):
 
         books: List[dict] = []
         seen = set()
-        roots = []
-        try:
-            roots.append(output_dir_p)
-            legacy = get_pdf_master_data_root(output_dir_p)
-            if legacy.exists():
-                roots.append(legacy)
-        except Exception:
-            roots = [output_dir_p]
 
-        try:
-            for root in roots:
-                if not root.exists():
-                    continue
-                for data_dir in root.iterdir():
-                    if not data_dir.is_dir() or data_dir.name in {"_pdf_master_data", "system"}:
+        for root in valid_roots:
+            try:
+                output_dir_p = Path(root)
+                search_roots = []
+                try:
+                    search_roots.append(output_dir_p)
+                    legacy = get_pdf_master_data_root(output_dir_p)
+                    if legacy.exists():
+                        search_roots.append(legacy)
+                except Exception:
+                    search_roots = [output_dir_p]
+
+                for search_root in search_roots:
+                    if not search_root.exists():
                         continue
-                    try:
-                        key = str(data_dir.resolve())
-                        if key in seen:
+                    for data_dir in search_root.iterdir():
+                        if not data_dir.is_dir() or data_dir.name in {"_pdf_master_data", "system"}:
                             continue
+                        try:
+                            key = str(data_dir.resolve())
+                            if key in seen:
+                                continue
 
-                        parts_dir = data_dir / 'parts'
-                        compare_dir = data_dir / 'compare'
-                        ckpt_path = data_dir / 'checkpoints' / 'checkpoint.json'
-                        has_parts = parts_dir.exists()
-                        has_compare = compare_dir.exists()
-                        has_ckpt = ckpt_path.exists()
-                        has_meta = (data_dir / 'book_meta.json').exists()
+                            parts_dir = data_dir / 'parts'
+                            compare_dir = data_dir / 'compare'
+                            ckpt_path = data_dir / 'checkpoints' / 'checkpoint.json'
+                            has_parts = parts_dir.exists()
+                            has_compare = compare_dir.exists()
+                            has_ckpt = ckpt_path.exists()
+                            has_meta = (data_dir / 'book_meta.json').exists()
 
-                        if not (has_parts or has_compare or has_ckpt or has_meta):
+                            if not (has_parts or has_compare or has_ckpt or has_meta):
+                                continue
+
+                            seen.add(key)
+                            mtimes = [data_dir.stat().st_mtime]
+                            partial_path = compare_dir / 'partial.json'
+
+                            compare_results = {}
+                            if partial_path.exists():
+                                mtimes.append(partial_path.stat().st_mtime)
+                                compare_results = load_partial_compare_results_file(partial_path)
+
+                            summary = None
+                            if compare_dir.exists():
+                                summary = load_final_compare_summary_file(compare_dir, compare_results, len(compare_results) or 1)
+
+                            avg_coverage = int(summary.get('coverage_estimate_pct', 0)) if summary else 0
+                            if not avg_coverage and compare_results:
+                                valid_covs = [r.coverage_pct for r in compare_results.values() if r.error is None]
+                                avg_coverage = int(sum(valid_covs) / len(valid_covs)) if valid_covs else 0
+
+                            weak_count = len([r for r in compare_results.values() if r.error is not None or int(r.coverage_pct) < 90]) if compare_results else 0
+
+                            parts_count = 0
+                            if has_parts:
+                                try:
+                                    parts_count = len([p for p in parts_dir.iterdir() if p.name.endswith('.txt')])
+                                except Exception:
+                                    parts_count = 0
+
+                            if not parts_count and compare_results:
+                                parts_count = len(compare_results)
+
+                            final_file = find_existing_final_output_file(output_dir_p, data_dir.name)
+                            if final_file and final_file.exists():
+                                mtimes.append(final_file.stat().st_mtime)
+
+                            books.append({
+                                'book_stem': data_dir.name,
+                                'data_dir': data_dir,
+                                'parts_count': parts_count,
+                                'has_compare': bool(compare_results),
+                                'avg_coverage': avg_coverage,
+                                'weak_count': weak_count,
+                                'last_modified': format_timestamp_human(max(mtimes)),
+                                'final_file': final_file,
+                                'root_dir': output_dir_p
+                            })
+                        except Exception:
                             continue
-
-                        seen.add(key)
-                        mtimes = [data_dir.stat().st_mtime]
-                        partial_path = compare_dir / 'partial.json'
-
-                        compare_results = {}
-                        if partial_path.exists():
-                            mtimes.append(partial_path.stat().st_mtime)
-                            compare_results = load_partial_compare_results_file(partial_path)
-
-                        summary = None
-                        if compare_dir.exists():
-                            summary = load_final_compare_summary_file(compare_dir, compare_results, len(compare_results) or 1)
-
-                        avg_coverage = int(summary.get('coverage_estimate_pct', 0)) if summary else 0
-                        if not avg_coverage and compare_results:
-                            valid_covs = [r.coverage_pct for r in compare_results.values() if r.error is None]
-                            avg_coverage = int(sum(valid_covs) / len(valid_covs)) if valid_covs else 0
-
-                        weak_count = len([r for r in compare_results.values() if r.error is not None or int(r.coverage_pct) < 90]) if compare_results else 0
-
-                        parts_count = 0
-                        if has_parts:
-                            try:
-                                parts_count = len([p for p in parts_dir.iterdir() if p.name.endswith('.txt')])
-                            except Exception:
-                                parts_count = 0
-
-                        if not parts_count and compare_results:
-                            parts_count = len(compare_results)
-
-                        final_file = find_existing_final_output_file(output_dir_p, data_dir.name)
-                        if final_file and final_file.exists():
-                            mtimes.append(final_file.stat().st_mtime)
-
-                        books.append({
-                            'book_stem': data_dir.name,
-                            'data_dir': data_dir,
-                            'parts_count': parts_count,
-                            'has_compare': bool(compare_results),
-                            'avg_coverage': avg_coverage,
-                            'weak_count': weak_count,
-                            'last_modified': format_timestamp_human(max(mtimes)),
-                            'final_file': final_file,
-                        })
-                    except Exception:
-                        continue
-        except Exception:
-            return []
+            except Exception:
+                continue
 
         books.sort(key=lambda item: item.get('last_modified', ''), reverse=True)
         self._books_discovery_cache[cache_key] = (now, books)
         return books
+
+    def _discover_processed_books(self, output_dir: Path, force_refresh: bool = False) -> List[dict]:
+        return self._discover_processed_books_multi([output_dir], force_refresh)
 
     def _find_source_path_for_book(self, book_stem: str, safe_stem: str, output_dir: Path) -> Optional[Path]:
         # ✅ v27.0: البحث عن المصدر الأصلي من السجل أو الملفات الحالية أو مجلدات قريبة
@@ -12646,6 +13509,7 @@ class MainWindow(QMainWindow):
         return sorted(shards, key=lambda s: s.idx)
 
     def _load_previous_book(self, book_stem: str, output_dir: Path, silent: bool = False):
+        self.roots_manager.add_or_update_root(str(output_dir))
         # ✅ v27.0: تحميل كتاب محفوظ سابقاً وإعادته ككتاب نشط في الواجهة
         if self._is_any_background_task_running():
             if not silent:
@@ -12678,6 +13542,12 @@ class MainWindow(QMainWindow):
         self._final_compare_result = load_final_compare_summary_file(
             compare_dir, self._partial_compare_results, len(self._current_book_shards))
         self._secondary_compare_results = {}
+        # ✅ إصلاح: كان هناك قاموس منفصل (_session_compare_results_by_book) يجمع
+        # نتائج مقارنة عدة كتب من الجلسة الحالية، وكانت شاشات المقارنة تُفضّله
+        # دائماً على بيانات الكتاب المُحمَّل حديثاً إن لم يُصفَّر — فتظل تعرض
+        # كتاباً قديماً من الجلسة رغم تحميل كتاب آخر من المكتبة/السجل بنجاح.
+        # تصفيره هنا تجعل الشاشات تعتمد فوراً على بيانات الكتاب الذي حُمِّل الآن.
+        self._session_compare_results_by_book = {}
         self._refresh_partial_compare_table()
         self.partial_compare_detail.clear()
         if self._final_compare_result:
@@ -12726,6 +13596,7 @@ class MainWindow(QMainWindow):
                 "pages_per_batch": self.pages_per_batch_spin.value() if hasattr(self, "pages_per_batch_spin") else 25,
                 "lines_per_batch": self.lines_per_batch_spin.value() if hasattr(self, "lines_per_batch_spin") else 2000,
                 "finished_outputs": [(n, str(p)) for n, p in getattr(self, "_finished_output_files", [])],
+                "scrollbar_pos": self.log_view.verticalScrollBar().value() if hasattr(self, "log_view") else 0,
             }
             atomic_write_text(self._active_session_path, json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             atomic_write_text(sdir / "last_session.json", json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -12743,7 +13614,9 @@ class MainWindow(QMainWindow):
             if not files:
                 return
             out = data.get("output_dir") or ""
-            if out and hasattr(self, "output_dir_edit"): self.output_dir_edit.setText(out)
+            if out and hasattr(self, "output_dir_edit"):
+                self.output_dir_edit.setText(out)
+                self.roots_manager.add_or_update_root(out)
             if hasattr(self, "custom_split_text"): self.custom_split_text.setText(data.get("custom_split_text", ""))
             self._file_custom_splits = {str(k): str(v) for k, v in (data.get("file_custom_splits") or {}).items()}
             self._file_custom_batches = {str(k): str(v) for k, v in (data.get("file_custom_batches") or {}).items()}
@@ -12753,6 +13626,8 @@ class MainWindow(QMainWindow):
                 self.pages_per_batch_spin.setValue(int(data["pages_per_batch"]))
             if "lines_per_batch" in data and hasattr(self, "lines_per_batch_spin"):
                 self.lines_per_batch_spin.setValue(int(data["lines_per_batch"]))
+            if "scrollbar_pos" in data and hasattr(self, "log_view"):
+                QTimer.singleShot(1000, lambda v=data["scrollbar_pos"]: self.log_view.verticalScrollBar().setValue(v))
             self._active_session_path = last_path
             self._suppress_previous_prompt_once = True
             try:
@@ -12799,7 +13674,9 @@ class MainWindow(QMainWindow):
             data = read_json_file_safe(sp, {}) or {}
             self._on_clear_files()
             out = data.get("output_dir") or ""
-            if out: self.output_dir_edit.setText(out)
+            if out:
+                self.output_dir_edit.setText(out)
+                self.roots_manager.add_or_update_root(out)
             self.custom_split_text.setText(data.get("custom_split_text", ""))
             self._file_custom_splits = {str(k): str(v) for k, v in (data.get("file_custom_splits") or {}).items()}
             self._file_custom_batches = {str(k): str(v) for k, v in (data.get("file_custom_batches") or {}).items()}
@@ -13153,7 +14030,11 @@ class MainWindow(QMainWindow):
         self._on_font_size_changed(self.font_size_spin.value())
         self._update_keys_label()
         self._on_model_changed()
-
+        # ✅ v8.5 Fix: SettingsManager is not iterable, use get()
+        saved_scroll = s.get("log_scrollbar_pos")
+        if saved_scroll is not None and hasattr(self, "log_view"):
+            QTimer.singleShot(1500, lambda v=saved_scroll: self.log_view.verticalScrollBar().setValue(v))
+    
     def _save_ui_to_settings(self):
         s = self.settings
         s.set("output_dir", self.output_dir_edit.text().strip())
@@ -13196,6 +14077,7 @@ class MainWindow(QMainWindow):
             s.set("auto_loop_max_iterations", self.autoloop_max_iter_spin.value())
         s.set("translate_src_lang", self.translate_src_combo.currentData())
         s.set("translate_tgt_lang", self.translate_tgt_combo.currentData())
+        s.set("log_scrollbar_pos", self.log_view.verticalScrollBar().value() if hasattr(self, "log_view") else 0)
         try:
             # ✅ v28.4: احفظ عموداً موحّداً + الارتفاع الأفقي
             try:
@@ -13234,7 +14116,7 @@ class MainWindow(QMainWindow):
                     self._file_range_export_group_size[str(p)] = int(getattr(self, "_last_range_export_group_size", 1) or 1)
                 if not hasattr(self, "_pending_book_actions"):
                     self._pending_book_actions = {}
-                if action in ("reextract_all", "reextract_selected"):
+                if action in ("reextract_all", "reextract_selected", "resume_missing"):
                     self._pending_book_actions[str(p)] = action
             self.input_files.append(p)
             try:
@@ -13332,12 +14214,9 @@ class MainWindow(QMainWindow):
 
     def _prompt_if_previous_book_exists(self, file_path: Path, output_dir: Path) -> str:
         """
-        ✅ v28.0: إن وُجدت بيانات سابقة للكتاب → خيّر المستخدم.
-        returns: 'new' | 'cancel' | 'reextract_all' | 'reextract_selected' | 'partial_new'
+        ✅ v8.4: إن وُجدت بيانات سابقة للكتاب → خيّر المستخدم.
         """
         try:
-            # ✅ v29.14: افحص المسار الجديد المباشر + المسار القديم داخل _pdf_master_data
-            # + وجود الملف النهائي نفسه؛ حتى لا تفوت النسخ السابقة بعد تغيير بنية الحفظ.
             stem = file_path.stem
             safe_stem = safe_book_dir_name(stem)
             candidates = []
@@ -13393,16 +14272,18 @@ class MainWindow(QMainWindow):
             rate_unit = "كلمة" if is_txt_file(file_path) else "صفحة"
 
             remembered = getattr(self, "_previous_book_choice_for_add_batch", None)
-            if remembered in {"cancel", "new", "partial_new", "reextract_all"}:
+            if remembered in {"cancel", "new", "partial_new", "reextract_all", "resume_missing"}:
                 if remembered == "reextract_all":
                     self._wipe_book_parts_for_full_reextract(output_dir, file_path.stem)
                 return remembered
 
+            # ✅ v8.4: إصلاح خطأ 'lay' عبر تعريف الحوار أولاً
             dlg = QDialog(self)
             dlg.setWindowTitle("📚 نسخة سابقة مكتشفة")
             dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
             dlg.resize(560, 260)
             lay = QVBoxLayout(dlg)
+            
             info = QLabel(
                 f"الكتاب <b>{file_path.name}</b> له بيانات سابقة محفوظة.<br><br>"
                 f"• عدد الأجزاء السابق: <b>{parts_count or '—'}</b><br>"
@@ -13412,25 +14293,30 @@ class MainWindow(QMainWindow):
             info.setTextFormat(Qt.TextFormat.RichText)
             info.setWordWrap(True)
             lay.addWidget(info)
+            
             remember_cb = QCheckBox("تذكر اختياري لباقي الكتب في عملية الإضافة الحالية فقط")
             lay.addWidget(remember_cb)
+            
             grid = QGridLayout()
             chosen = {"action": "new"}
             def choose(action):
                 chosen["action"] = action
                 dlg.accept()
+            
             btn_cancel = QPushButton("❌ إلغاء إضافة هذا الملف")
             btn_resume = QPushButton("▶️ استكمال الناقص")
             btn_partial_new = QPushButton("✂️ استخراج جزئي جديد")
             btn_session = QPushButton("📂 جلسة عمل سابقة")
             btn_all = QPushButton("♻️ إعادة استخراج كامل")
             btn_parts = QPushButton("🧩 إعادة استخراج أجزاء محددة")
+            
             btn_cancel.clicked.connect(lambda: choose("cancel"))
-            btn_resume.clicked.connect(lambda: choose("new"))
+            btn_resume.clicked.connect(lambda: choose("resume_missing"))
             btn_partial_new.clicked.connect(lambda: choose("partial_new"))
             btn_session.clicked.connect(lambda: choose("restore_book_session"))
             btn_all.clicked.connect(lambda: choose("reextract_all"))
             btn_parts.clicked.connect(lambda: choose("reextract_selected"))
+            
             grid.addWidget(btn_cancel, 0, 0)
             grid.addWidget(btn_resume, 0, 1)
             grid.addWidget(btn_partial_new, 1, 0)
@@ -13438,45 +14324,42 @@ class MainWindow(QMainWindow):
             grid.addWidget(btn_all, 2, 0)
             grid.addWidget(btn_parts, 2, 1)
             lay.addLayout(grid)
+            
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return "cancel"
+                
             action = chosen.get("action", "new")
-            # لا نتذكر اختيارات تحتاج تدخلاً مختلفاً لكل كتاب.
             if remember_cb.isChecked() and action not in {"reextract_selected", "restore_book_session"}:
                 self._previous_book_choice_for_add_batch = action
+                
             if action == "cancel":
                 return "cancel"
             if action == "partial_new":
                 return "partial_new"
+            if action == "resume_missing":
+                return "resume_missing"
             if action == "restore_book_session":
                 ctext = self._choose_session_for_book(file_path)
-                if ctext is None:
-                    return "cancel"
-                if ctext:
-                    self._file_custom_splits[str(file_path)] = ctext
-                else:
-                    self._file_custom_splits.pop(str(file_path), None)
+                if ctext is None: return "cancel"
+                if ctext: self._file_custom_splits[str(file_path)] = ctext
+                else: self._file_custom_splits.pop(str(file_path), None)
                 return "new"
             if action == "reextract_all":
                 self._wipe_book_parts_for_full_reextract(output_dir, file_path.stem)
                 return "reextract_all"
             if action == "reextract_selected":
-                # تحميل الكتاب ثم فتح اختيار الأجزاء
                 try:
                     self._load_previous_book(file_path.stem, output_dir, silent=True)
-                except Exception:
-                    pass
+                except Exception: pass
                 if self._current_book_shards:
                     pdf_shards = [s for s in self._current_book_shards if not s.is_txt] or list(self._current_book_shards)
-                    dlg = ManualShardSelectionDialog(
+                    dlg_sel = ManualShardSelectionDialog(
                         self, pdf_shards, self._partial_compare_results,
                         file_path.stem, allow_reextract=True,
                         title="🧩 اختر الأجزاء لإعادة استخراجها")
-                    # force reextract mode UX: user still can pick reextract button
-                    if dlg.exec() == QDialog.DialogCode.Accepted:
-                        selected = dlg.get_selected_indices()
+                    if dlg_sel.exec() == QDialog.DialogCode.Accepted:
+                        selected = dlg_sel.get_selected_indices()
                         if selected:
-                            # store selection to wipe only those parts
                             if not hasattr(self, "_pending_partial_reextract"):
                                 self._pending_partial_reextract = {}
                             self._pending_partial_reextract[str(file_path)] = selected
@@ -13488,26 +14371,38 @@ class MainWindow(QMainWindow):
             safe_print(f"previous book prompt: {e}")
             return "new"
 
-    def _wipe_book_parts_for_full_reextract(self, output_dir: Path, book_stem: str):
-        """حذف الأجزاء والـ checkpoint لفرض إعادة استخراج كامل مع الإبقاء على meta إن أمكن."""
+    def _wipe_book_data_completely(self, output_dir: Path, book_stem: str):
+        """✅ v8.3: حذف مجلد بيانات الكتاب بالكامل والملفات النهائية المرتبطة به لضمان بدء جديد تماماً عند تغيير الإعدادات."""
         try:
-            parts_dir = get_book_parts_dir(output_dir, book_stem)
-            if parts_dir.exists():
-                for pf in parts_dir.glob(f"{book_stem}_part_*.txt"):
-                    try: pf.unlink()
+            # 1. حذف مجلد البيانات بالكامل (_pdf_master_data/<book>)
+            data_dir = get_book_data_dir(output_dir, book_stem)
+            if data_dir.exists():
+                shutil.rmtree(data_dir, ignore_errors=True)
+            
+            # 2. حذف الملفات النهائية المكتملة أو غير المكتملة في مجلد الإخراج
+            safe_stem = safe_book_dir_name(book_stem)
+            candidates = [
+                output_dir / f"{book_stem}.txt",
+                output_dir / f"{safe_stem}.txt",
+                output_dir / f"{book_stem}_مستخرج.txt",
+                output_dir / f"{safe_stem}_مستخرج.txt",
+                output_dir / f"{book_stem}_معالج.txt",
+                output_dir / f"{safe_stem}_معالج.txt",
+                output_dir / f"{book_stem}_مستخرج.INCOMPLETE.txt",
+                output_dir / f"{safe_stem}_مستخرج.INCOMPLETE.txt",
+            ]
+            for c in candidates:
+                if c.exists():
+                    try: c.unlink()
                     except Exception: pass
-            ckpt = get_book_checkpoints_dir(output_dir, book_stem) / "checkpoint.json"
-            if ckpt.exists():
-                try: ckpt.unlink()
-                except Exception: pass
-            compare_dir = get_book_compare_dir(output_dir, book_stem)
-            partial = compare_dir / "partial.json"
-            if partial.exists():
-                try: partial.unlink()
-                except Exception: pass
-            self._append_log(f"🗑️  مُسحت بيانات الأجزاء السابقة لإعادة استخراج كامل: {book_stem}")
+            
+            self._append_log(f"🗑️ تم حذف كافة البيانات السابقة للكتاب (بدء جديد): {book_stem}")
         except Exception as e:
-            self._append_log(f"⚠️  تعذر مسح البيانات السابقة: {e}")
+            self._append_log(f"⚠️ تعذر حذف البيانات بالكامل: {e}")
+
+    def _wipe_book_parts_for_full_reextract(self, output_dir: Path, book_stem: str):
+        """حذف الأجزاء والـ checkpoint لفرض إعادة استخراج كامل."""
+        self._wipe_book_data_completely(output_dir, book_stem)
 
     def _wipe_selected_parts(self, output_dir: Path, book_stem: str, indices: List[int]):
         try:
@@ -13855,12 +14750,41 @@ class MainWindow(QMainWindow):
         item.setForeground(QBrush(colors.get(status, QColor("#cdd6f4"))))
         item.setData(Qt.ItemDataRole.UserRole + 1, status)
 
+    def _run_roots_migration_if_needed(self):
+        try:
+            if not self.roots_manager.path.exists():
+                roots_set = set()
+                curr_out = self.settings.get("output_dir", "")
+                if curr_out:
+                    try:
+                        roots_set.add(str(Path(curr_out).resolve()))
+                    except Exception:
+                        pass
+                for record in self.history_manager.get_all():
+                    out = record.get("output_dir")
+                    if out:
+                        try:
+                            roots_set.add(str(Path(out).resolve()))
+                        except Exception:
+                            pass
+                for r_path in sorted(roots_set):
+                    try:
+                        if Path(r_path).exists():
+                            self.roots_manager.add_or_update_root(r_path)
+                    except Exception:
+                        pass
+                if not self.roots_manager.get_all_roots():
+                    self.roots_manager.add_or_update_root(str(Path(".").absolute()))
+        except Exception as e:
+            safe_print(f"[roots_migration] error: {e}")
+
     def _on_browse_output(self):
         d = QFileDialog.getExistingDirectory(self, "اختر مجلد")
         if d:
             self.output_dir_edit.setText(d)
             self.settings.set("output_dir", d)
             self.settings.save()
+            self.roots_manager.add_or_update_root(d)
 
     _SAFE_EXTENSIONS = SUPPORTED_PDF_EXTS | SUPPORTED_TXT_EXTS | {".bak", ".diff", ".patch"}
 
@@ -14721,7 +15645,7 @@ class MainWindow(QMainWindow):
             actual = int(event.get("actual_workers") or workers)
             available = int(event.get("available_keys") or 0)
             model_id = event.get("model_id") or "النموذج الحالي"
-            # ✅ v27.7: عرض العدد الفعلي للمسارات في شريط الحالة بدون تغيير إعدادات المستخدم.
+            # ✅ v27.8: عرض العدد الفعلي للمسارات في شريط الحالة بدون تغيير إعدادات المستخدم.
             if actual != requested:
                 msg = (f"⚙️ المسارات الفعلية: {actual}/{requested} — "
                        f"تم التقليل حسب مفاتيح {model_id} المتاحة ({available})")
@@ -14905,8 +15829,8 @@ class MainWindow(QMainWindow):
             pv.addLayout(top)
 
             table = QTableWidget()
-            table.setColumnCount(5)
-            table.setHorizontalHeaderLabels(["جزء", "صفحات", "النسبة%", "الفجوات", "إجراء"])
+            table.setColumnCount(4)
+            table.setHorizontalHeaderLabels(["جزء", "صفحات", "النسبة%", "الفجوات"])
             table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             table.setAlternatingRowColors(True)
@@ -14934,8 +15858,9 @@ class MainWindow(QMainWindow):
                 }
             """)
             table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-            for c in (0, 1, 2, 4):
+            for c in (0, 1, 2):
                 table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+            _install_part_context_menu(table, self, idx_col=0)
             # Side-by-side horizontal splitter: Book results on the right, details on the left
             h_split = QSplitter(Qt.Orientation.Horizontal)
             h_split.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
@@ -15086,10 +16011,6 @@ class MainWindow(QMainWindow):
                         gaps_item.setForeground(QColor("#f38ba8"))
                     gaps_item.setToolTip(row_tooltip_html)
                     table.setItem(row, 3, gaps_item)
-                    
-                    btn = _make_part_actions_button(self, int(r.shard_idx))
-                    btn.setToolTip(row_tooltip_html)
-                    table.setCellWidget(row, 4, btn)
                 if table.rowCount() <= 80:
                     table.resizeRowsToContents()
                 else:
@@ -15267,11 +16188,6 @@ class MainWindow(QMainWindow):
                 note_item = QTableWidgetItem((notes or "—")[:160])
                 note_item.setToolTip(notes or "")
                 self.partial_compare_table.setItem(row, 4, note_item)
-                try:
-                    btn_widget = _make_part_actions_button(self, int(r.shard_idx))
-                    self.partial_compare_table.setCellWidget(row, 5, btn_widget)
-                except Exception:
-                    pass
             if self.partial_compare_table.rowCount() <= 80:
                 self.partial_compare_table.resizeRowsToContents()
             else:
@@ -16692,6 +17608,7 @@ class MainWindow(QMainWindow):
     def _confirm_batch_rate_consistency(self, output_dir: Path) -> bool:
         """تنبيه اختلاف معدل الاستخراج عن بيانات نفس الكتاب الفعلي فقط (كامل أو جزئي)."""
         mismatches = []
+        mismatched_stems = []
         for file_path in self.input_files:
             try:
                 per_file_custom = getattr(self, "_file_custom_splits", {}).get(str(file_path), self.custom_split_text.text().strip())
@@ -16712,6 +17629,7 @@ class MainWindow(QMainWindow):
                     mismatches.append(
                         f"• <b>{label}</b>: محفوظ <b>{saved_rate}</b> {unit}/دفعة "
                         f"(أجزاء: {saved_parts}) — الحالي <b>{current_rate}</b>")
+                    mismatched_stems.append(effective_stem)
             except Exception:
                 continue
         if not mismatches:
@@ -16721,12 +17639,18 @@ class MainWindow(QMainWindow):
             + "<br>".join(mismatches[:8])
             + ("<br>• ..." if len(mismatches) > 8 else "")
             + "<br><br>تغيير المعدل قد يُنتج تقسيم أجزاء مختلف عن السابق "
-            "ويسبب مشاكل في الاستكمال/المقارنة.<br><br>"
-            "هل تريد المتابعة رغم ذلك؟")
+            "ويسبب خلطاً في الأجزاء المستخرجة.<br><br>"
+            "<b>هل تريد المتابعة؟</b> (سيتم حذف البيانات القديمة للكتب المتأثرة والبدء من جديد)")
         ans = QMessageBox.question(
             self, "تنبيه اختلاف المعدل", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        return ans == QMessageBox.StandardButton.Yes
+        
+        if ans == QMessageBox.StandardButton.Yes:
+            # ✅ v8.3: حذف البيانات القديمة تماماً عند الموافقة على تغيير الدفعة لمنع الخلط
+            for stem in mismatched_stems:
+                self._wipe_book_data_completely(output_dir, stem)
+            return True
+        return False
 
     def _confirm_resume_missing_parts(self, output_dir: Path) -> bool:
         plans = self._build_resume_missing_plans(output_dir)
@@ -16838,7 +17762,8 @@ class MainWindow(QMainWindow):
                 pass
 
     def _request_stop_all(self):
-        """إرسال stop() + quit() فقط — لا حذف مراجع."""
+        """✅ v8.4: إيقاف فوري قاطع - استخدام terminate فوراً للمسارات التي لا تستجيب."""
+        # 1. إيقاف الـ workers تعاونياً أولاً
         for attr in (
             "worker", "_reextract_worker", "_recompare_worker",
             "_autoloop_worker", "_manual_recheck_worker", "_fetch_worker",
@@ -16847,22 +17772,27 @@ class MainWindow(QMainWindow):
             w = getattr(self, attr, None)
             if w is not None and hasattr(w, "stop"):
                 try:
-                    w.stop()
+                    w.stop(wait=False)
                 except Exception:
-                    pass
+                    try: w.stop()
+                    except Exception: pass
+                    
+        # 2. قتل الـ threads فوراً
         for attr in (
             "worker_thread", "_reextract_thread", "_recompare_thread",
             "_autoloop_thread", "_manual_recheck_thread", "_fetch_thread",
             "_full_compare_thread",
         ):
             th = getattr(self, attr, None)
-            if th is None:
-                continue
+            if th is None: continue
             try:
                 if th.isRunning():
                     th.quit()
-            except Exception:
-                pass
+                    # v8.4: تقليل وقت الانتظار جداً قبل القتل القسري
+                    if not th.wait(50):
+                        th.terminate()
+                        th.wait(50)
+            except Exception: pass
 
     def _is_thread_alive(self, attr: str) -> bool:
         th = getattr(self, attr, None)
@@ -17163,7 +18093,10 @@ class MainWindow(QMainWindow):
                 pass
             safe_print(f"[start] cleanup error: {e}")
 
-        self._sync_compare_model_to_extract()
+        # ✅ تم إزالة المزامنة التلقائية لنموذج المقارنة مع نموذج الاستخراج (v_stopfix):
+        # لا يجوز توحيد compare_model_id مع model_id تلقائياً — فقط عبر زر صريح
+        # "نسخ نموذج الاستخراج إلى نموذج المقارنة" (انظر _on_copy_extract_model_to_compare).
+        # self._sync_compare_model_to_extract()
 
         self._save_ui_to_settings()
         self._update_keys_label()
@@ -17184,11 +18117,74 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"تعذر إنشاء المجلدات: {e}"); return
 
-        if not self._confirm_completed_books_on_start(out_dir_p):
+        self.roots_manager.add_or_update_root(str(out_dir_p))
+
+        # ✅ v8.2: معالجة خيارات الاستكمال بناءً على الاختيار الأول عند إضافة الكتاب
+        # بدلاً من عرض شاشات تأكيد متكررة.
+        files_to_run_this_session = []
+        for file_path in list(self.input_files):
+            action = self._pending_book_actions.get(str(file_path), "new") # الافتراضي هو "جديد" إذا لم يتم اختيار شيء
+            
+            if action == "cancel":
+                # إذا ألغى المستخدم هذا الملف، نتجاهله
+                continue
+            elif action == "reextract_all":
+                self._wipe_book_parts_for_full_reextract(out_dir_p, file_path.stem)
+                files_to_run_this_session.append(file_path)
+            elif action == "reextract_selected":
+                # هنا نحتاج إلى إعادة عرض شاشة اختيار الأجزاء إذا لم تكن قد تمت معالجتها بالفعل
+                # أو استخدام النطاقات المخصصة المخزنة
+                # حالياً، سنفترض أن النطاقات المخصصة تم إعدادها في _add_files_from_paths
+                files_to_run_this_session.append(file_path)
+            elif action == "resume_missing":
+                # لا نحتاج لعمل شيء هنا، لأن المنطق سيقوم تلقائياً باستئناف الأجزاء المفقودة
+                files_to_run_this_session.append(file_path)
+            elif action == "new":
+                # كتاب جديد، لا نحتاج لعمل شيء خاص هنا
+                files_to_run_this_session.append(file_path)
+            
+            # إزالة الإجراء المعلق بعد معالجته
+            if str(file_path) in self._pending_book_actions:
+                del self._pending_book_actions[str(file_path)]
+
+        self.input_files = files_to_run_this_session
+        self._active_run_files = list(files_to_run_this_session)
+        # تحديث قائمة الواجهة الرسومية بعد التصفية
+        self.files_list.clear()
+        for p in self.input_files:
+            try:
+                if is_txt_file(p):
+                    units = get_txt_word_count(p); unit_label = "كلمة"; icon = "📝"
+                else:
+                    units = get_pdf_page_count(p); unit_label = "ص"; icon = "📄"
+                size = p.stat().st_size / 1024 / 1024
+                label = f"⏳ {icon} {p.name}    │  📃 {units} {unit_label}  │  💾 {size:.2f} MB"
+                if str(p) in getattr(self, "_file_custom_splits", {}):
+                    label += "   │  ✂️ جزئي"
+                if str(p) in getattr(self, "_file_custom_batches", {}):
+                    label += "   │  ▦ دفعات"
+            except Exception:
+                label = f"⏳ {p.name}"
+                if str(p) in getattr(self, "_file_custom_splits", {}):
+                    label += "   │  ✂️ جزئي"
+                if str(p) in getattr(self, "_file_custom_batches", {}):
+                    label += "   │  ▦ دفعات"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
+            item.setData(Qt.ItemDataRole.UserRole + 1, "pending")
+            self.files_list.addItem(item)
+        self._update_files_stats()
+        self._refresh_session_expected_totals()
+
+        if not self.input_files:
+            self.statusBar().showMessage("ℹ️ لا توجد كتب مطلوبة للمعالجة حالياً.", 5000)
             return
 
-        if not self._confirm_resume_missing_parts(out_dir_p):
-            return
+        # لم نعد بحاجة لهذه الاستدعاءات لأننا عالجنا الخيارات بالفعل
+        # if not self._confirm_completed_books_on_start(out_dir_p):
+        #     return
+        # if not self._confirm_resume_missing_parts(out_dir_p):
+        #     return
 
         # ✅ v28.0: تنبيه اختلاف معدل الاستخراج عن البيانات المحفوظة
         if not self._confirm_batch_rate_consistency(out_dir_p):
@@ -17427,35 +18423,47 @@ class MainWindow(QMainWindow):
                 setattr(self, t_attr, None)
 
     def _on_stop(self):
-        """إيقاف قاطع وفوري لحظي لكافة العمليات والمهام دون تعليق."""
+        """✅ v8.4: إيقاف قاطع وفوري حقيقي - لا نعلن النجاح إلا بعد محاولة القتل الفعلي."""
         self._append_log("⛔ إيقاف فوري قاطع لكل المهام والعمليات والأنشطة...")
         self.statusBar().showMessage("⛔ جاري الإيقاف الفوري لكافة الخيوط...", 3000)
 
         self.btn_stop.setEnabled(False)
         self.btn_pause.setEnabled(False)
-        self.btn_stop.setText("⏹️ إيقاف")
         self._set_app_state("STOPPING")
 
         # 1. إرسال إشارات الإيقاف وإلغاء المهام في ThreadPools فوراً
         try:
             self._request_stop_all()
-            for w in (getattr(self, "worker", None), getattr(self, "_reextract_worker", None), getattr(self, "_recompare_worker", None)):
+            for wattr in ("worker", "_reextract_worker", "_recompare_worker", "_autoloop_worker"):
+                w = getattr(self, wattr, None)
                 if w and hasattr(w, "_executor") and w._executor:
                     try:
                         w._executor.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
+                    except Exception: pass
         except Exception as e:
             safe_print(f"[stop_all] {e}")
 
-        # 2. إنهاء قسري فوري للخيوط المتبقية
-        QTimer.singleShot(150, self._force_terminate_bg_threads)
+        # 1.5 إيقاف مركزي للمكونات المسجّلة (مقارنات/مفاتيح/checkpoints) وحفظ حالتها ذرّياً
+        #     يعمل في خيط منفصل حتى لا يجمّد الواجهة. لا يُغلق التطبيق أبداً —
+        #     فقط يوقف/يحفظ المهمة الحالية حتى يمكن بدء مهمة جديدة بعده مباشرة.
+        try:
+            threading.Thread(
+                target=request_stop,
+                kwargs={"timeout": 10.0, "log_fn": safe_print},
+                daemon=True,
+            ).start()
+        except Exception as e:
+            safe_print(f"[request_stop] {e}")
+
+        # 2. إنهاء قسري فوري للخيوط المتبقية (مباشرة دون تأخير طويل)
+        self._force_terminate_bg_threads()
 
         # 3. إعادة الواجهة وضع الجاهزية لحظياً
         self.btn_start.setEnabled(True)
         self.btn_start.setText("▶️ بدء")
         self.btn_pause.setEnabled(False)
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setText("⏹️ إيقاف")
 
         self._append_log("✅ تم الإيقاف الفوري لكافة المهام بنجاح.")
         self.statusBar().showMessage("✅ تم الإيقاف الفوري بنجاح", 4000)
@@ -18421,7 +19429,7 @@ class MainWindow(QMainWindow):
             self.global_key_mgr.save()
         except Exception:
             pass
-        # ✅ v27.7: حفظ إجباري لحالات KeyPool المتسخة عند إغلاق التطبيق.
+        # ✅ v27.8: حفظ إجباري لحالات KeyPool المتسخة عند إغلاق التطبيق.
         for pool in list(_ACTIVE_KEY_POOLS):
             try:
                 pool.save_dirty()
@@ -18520,7 +19528,7 @@ class InitialSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("PDF Master Pro")
         title_lbl.setObjectName("splashTitle")
-        sub_lbl = QLabel("الإصدار v7.7 — استوديو استخراج ومعالجة ومقارنة الكتب")
+        sub_lbl = QLabel("الإصدار v8.0 — استوديو استخراج ومعالجة ومقارنة الكتب")
         sub_lbl.setObjectName("splashSubTitle")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -18646,11 +19654,13 @@ def main():
 
         set_windows_app_user_model_id()
         app = QApplication(sys.argv)
-        app.setApplicationName("PDF Master Pro v7.7")
+        app.setApplicationName("PDF Master Pro v8.2")
         try:
-            LOGGER.info("PDF_BACKEND=%s | PyQt6 app started", PDF_BACKEND)
+            LOGGER.info("PDF_BACKEND=%s, PDF_SPLIT_AVAILABLE=%s | PyQt6 app started", PDF_BACKEND, PDF_SPLIT_AVAILABLE)
         except Exception:
             pass
+        if PDF_BACKEND == "builtin":
+            LOGGER.warning("Builtin PDF backend is used. For better performance, install pikepdf, pypdf, or pdfrw.")
         app.setOrganizationName("PDF Master")
         app.setStyle("Fusion")
         app.setStyleSheet(DARK_STYLE)
@@ -18758,7 +19768,7 @@ def set_windows_app_user_model_id():
     try:
         if sys.platform == "win32":
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PDFMasterPro.v7.7.Personal")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PDFMasterPro.v8.0.Personal")
     except Exception:
         pass
 
