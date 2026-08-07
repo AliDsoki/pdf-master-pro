@@ -1,10 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['PDF_Master_Pro_v9_4.py'],
+    ['PDF_Master_Pro_v9_5.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # ✅ إصلاح: أضف ملف الأيقونة هنا حتى يُنسخ بجانب الـ exe الناتج —
+    # الكود يبحث عنه في نفس مجلد البرنامج باسم extract_pdf.ico (أو
+    # pdf_master.ico / pdf_master_icon.png) عبر resolve_app_icon_path().
+    # ضع ملف الأيقونة بجوار هذا الـ .spec قبل البناء بنفس الاسم.
+    datas=[('extract_pdf.ico', '.')],
     hiddenimports=['google.genai', 'pypdf'],
     hookspath=[],
     hooksconfig={},
@@ -30,6 +34,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # ✅ إصلاح: هذا هو ما يُظهر الأيقونة على ملف الـ exe نفسه في
+    # مستكشف الملفات — كان مفقوداً تماماً من قبل.
+    icon='extract_pdf.ico',
 )
 
 coll = COLLECT(
