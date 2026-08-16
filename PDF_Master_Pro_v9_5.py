@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 """
-🌟 PDF Master Pro v9.5 — Personal Edition
+🌟 PDF Master Pro v9.6 — Personal Edition
 معالج ملفات PDF و TXT احترافي
-(v9.5: إصلاح عدم ظهور الأيقونة على ملف الـ exe وعلى شريط المهام — السبب
+(v9.6: استبدال قائمة تقسيم الشاشة المنسدلة بثلاثة أزرار صغيرة برموز فقط في
+ الشريط السفلي؛ إصلاح تضخّم هذه الأزرار وتراكبها مع بعضها ومع شريط التقدم
+ المجاور (كان سببه أن ستايل البانل يفرض min-width/min-height على كل زر
+ بداخله ويُبطل setFixedSize، فتم تحديد الأبعاد صراحةً داخل ستايل كل زر).
+ v9.5: إصلاح عدم ظهور الأيقونة على ملف الـ exe وعلى شريط المهام — السبب
  مزدوج: (1) الكود كان يعتمد على __file__ لتحديد مجلد البرنامج، وهذا لا
  يشير لمجلد الـ exe الفعلي عند التحزيم بـ PyInstaller فيفشل دائماً في
  إيجاد ملف الأيقونة المرافق حتى لو كان موجوداً؛ الآن يُستخدم مسار
@@ -3114,7 +3118,7 @@ def ensure_custom_prompt(app_dir: Path) -> None:
 
 
 HELP_FILE_CONTENT = """═══════════════════════════════════════════════════════════════
-       🌟 PDF Master Pro v9.5 — دليل المستخدم الشامل
+       🌟 PDF Master Pro v9.6 — دليل المستخدم الشامل
 ═══════════════════════════════════════════════════════════════
 
 تصميم
@@ -9446,7 +9450,7 @@ class NoKeysWelcomeDialog(QDialog):
             self.setFont(QApplication.font())
         except Exception:
             self.setFont(QFont("Tahoma, Segoe UI, Arial", 10))
-        header = QLabel("👋 <b>مرحباً بك في PDF Master Pro v9.5!</b>")
+        header = QLabel("👋 <b>مرحباً بك في PDF Master Pro v9.6!</b>")
         header_font = QFont(self.font())
         header_font.setPointSize(21)
         header_font.setBold(True)
@@ -10239,6 +10243,29 @@ class PartsViewerDialog(QDialog):
             btn_pdf.setEnabled(False)
         row.addWidget(btn_pdf)
 
+        # إجراءات الجزء المطلوبة مباشرة داخل متصفح الأجزاء
+        mw = _resolve_part_actions_main_window(self.parent())
+        btn_recompare = QPushButton("🔍 إعادة المقارنة")
+        btn_recompare.setFixedWidth(112)
+        btn_recompare.setToolTip(f"إعادة مقارنة الجزء {idx} مع ملفه الأصلي")
+        if hasattr(mw, "_recompare_single_part"):
+            btn_recompare.clicked.connect(
+                lambda checked=False, part_idx=idx: self._trigger_part_action("recompare", part_idx))
+        else:
+            btn_recompare.setEnabled(False)
+        row.addWidget(btn_recompare)
+
+        btn_reextract = QPushButton("♻️ إعادة الاستخراج")
+        btn_reextract.setFixedWidth(118)
+        btn_reextract.setToolTip(
+            f"إعادة استخراج الجزء {idx} ثم إعادة تجميع الكتاب كاملاً تلقائياً")
+        if hasattr(mw, "_reextract_single_part"):
+            btn_reextract.clicked.connect(
+                lambda checked=False, part_idx=idx: self._trigger_part_action("reextract", part_idx))
+        else:
+            btn_reextract.setEnabled(False)
+        row.addWidget(btn_reextract)
+
         # تقرير المقارنة
         lbl_compare = QLabel("⏳")
         lbl_compare.setMinimumWidth(200)
@@ -10250,6 +10277,20 @@ class PartsViewerDialog(QDialog):
         row_widget.setLayout(row)
         self.vbox.insertWidget(insert_pos, row_widget)
         self._parts[idx] = (row_widget, lbl_compare)
+
+    def _trigger_part_action(self, action: str, idx: int):
+        """تنفيذ إجراء جزء من خلال MainWindow بعد إغلاق الحوار الحالي."""
+        mw = _resolve_part_actions_main_window(self.parent())
+        method_name = {
+            "recompare": "_recompare_single_part",
+            "reextract": "_reextract_single_part",
+        }.get(action)
+        method = getattr(mw, method_name, None) if method_name else None
+        if not callable(method):
+            QMessageBox.warning(self, "غير متاح", "إجراء الجزء غير متاح في النافذة الحالية.")
+            return
+        self.close()
+        QTimer.singleShot(0, lambda: method(idx))
 
     def _update_compare_label(self, idx: int):
         if idx not in self._parts:
@@ -11409,8 +11450,7 @@ class MainWindow(QMainWindow):
         self._midnight_timer.timeout.connect(self._on_periodic_check)
         self._midnight_timer.start(60_000)
 
-        self.setWindowTitle(
-            f"🌟 PDF Master Pro v9.5 — Personal Edition - Parallel Extraction Edition ({PDF_BACKEND})")
+        self.setWindowTitle("PDF_Master_Pro_v9_6")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1500, 900)
 
@@ -11780,41 +11820,90 @@ class MainWindow(QMainWindow):
 
         v.addLayout(prog_layout, 1)
 
-        # View Mode dropdown on the far left (removed label)
-        self.view_mode_combo = QComboBox()
-        self.view_mode_combo.addItem("⚖️ تقسيم الشاشة", 0)
-        self.view_mode_combo.addItem("📺 العرض الكامل", 1)
-        self.view_mode_combo.addItem("📋 الخيارات الكاملة", 2)
-        self.view_mode_combo.setMinimumWidth(180)
-        self.view_mode_combo.setMinimumHeight(44)
-        self.view_mode_combo.currentIndexChanged.connect(self._on_view_mode_changed)
-        v.addWidget(self.view_mode_combo)
+        # View Mode: 3 small icon-only buttons on the far left (replaces the old dropdown)
+        view_mode_row = QHBoxLayout()
+        view_mode_row.setSpacing(6)
+        self._view_mode_btn_group = QButtonGroup(panel)
+        self._view_mode_btn_group.setExclusive(True)
+        self.view_mode_buttons = []
+        view_mode_specs = [
+            ("⚖️", "تقسيم الشاشة"),
+            ("📺", "العرض الكامل"),
+            ("📋", "الخيارات الكاملة"),
+        ]
+        for i, (icon, tooltip) in enumerate(view_mode_specs):
+            btn = QPushButton(icon)
+            btn.setCheckable(True)
+            btn.setToolTip(tooltip)
+            btn.setFixedSize(28, 26)
+            # NOTE: min-width/max-width/min-height/max-height MUST be set explicitly here
+            # because the parent panel's stylesheet (QPushButton { min-width: 110px; min-height: 44px; })
+            # otherwise overrides setFixedSize() and inflates these icon buttons.
+            btn.setStyleSheet("""
+                QPushButton {
+                    min-width: 28px; max-width: 28px;
+                    min-height: 26px; max-height: 26px;
+                    padding: 0px; margin: 0px;
+                    font-size: 10pt; font-weight: 400;
+                    background-color: #313244;
+                    border: 1px solid #45475a;
+                    border-radius: 5px;
+                    color: #6c7086;
+                }
+                QPushButton:hover { background-color: #45475a; border-color: #89b4fa; }
+                QPushButton:checked {
+                    background-color: #89b4fa;
+                    border-color: #b4befe;
+                    color: #1e1e2e;
+                }
+            """)
+            self._view_mode_btn_group.addButton(btn, i)
+            view_mode_row.addWidget(btn)
+            self.view_mode_buttons.append(btn)
+        self.view_mode_buttons[0].setChecked(True)
+        self._view_mode_btn_group.idClicked.connect(self._on_view_mode_changed)
+        view_mode_row.addStretch(1)
+        v.addLayout(view_mode_row)
 
         return panel
 
     def _on_view_mode_changed(self, index: int):
-        if hasattr(self, "main_hsplit"):
-            sizes = self.main_hsplit.sizes()
-            if sizes and len(sizes) == 2 and sizes[0] > 0 and sizes[1] > 0:
-                self._saved_hsplit_sizes = sizes
-                
-        if index == 0:  # Balance Split
-            self._options_frame.show()
-            self._options_frame.setMinimumWidth(320)
-            self._options_frame.setMaximumWidth(16777215)
-            self.right_vsplit.show()
-            if hasattr(self, "_saved_hsplit_sizes") and self._saved_hsplit_sizes:
-                self.main_hsplit.setSizes(self._saved_hsplit_sizes)
-            else:
-                self.main_hsplit.setSizes([480, 1020])
-        elif index == 1:  # Maximized View / Hide Options
-            self._options_frame.hide()
-            self.right_vsplit.show()
-        elif index == 2:  # Maximized Options / Hide View
-            self._options_frame.show()
-            self._options_frame.setMinimumWidth(600)
-            self._options_frame.setMaximumWidth(16777215)
-            self.right_vsplit.hide()
+        """تطبيق وضع عرض واحد فقط ومنع بقاء الخيارات والمقارنة مخفيتين معاً."""
+        try:
+            # أوضاع العرض الثلاثة تلغي فوراً شاشة المقارنة المضمّنة؛ فهي حالة
+            # مستقلة عن وضع التقسيم ولا يجوز أن تترك العمود فارغاً.
+            if bool(getattr(self, "_embedded_compare_visible", False)):
+                self._hide_compare_panel_only()
+
+            if hasattr(self, "main_hsplit"):
+                sizes = self.main_hsplit.sizes()
+                if sizes and len(sizes) == 2 and sizes[0] > 0 and sizes[1] > 0:
+                    self._saved_hsplit_sizes = list(sizes)
+
+            if index == 0:  # تقسيم الشاشة: أظهر الخيارات والعرض معاً
+                self._set_options_view_visible(True, collapse=False)
+                self._options_frame.setMinimumWidth(320)
+                self._options_frame.setMaximumWidth(16777215)
+                self.right_vsplit.show()
+                self._ensure_left_column_visible()
+                if hasattr(self, "_saved_hsplit_sizes") and self._saved_hsplit_sizes:
+                    self.main_hsplit.setSizes(self._saved_hsplit_sizes)
+                else:
+                    self.main_hsplit.setSizes([480, 1020])
+
+            elif index == 1:  # العرض الكامل: أخفِ الخيارات وأظهر العرض
+                self._set_options_view_visible(False, collapse=True)
+                self.right_vsplit.show()
+                self._options_frame.setMinimumWidth(80)
+
+            elif index == 2:  # الخيارات الكاملة: أظهر الخيارات وأخفِ العرض
+                self._set_options_view_visible(True, collapse=False)
+                self._options_frame.setMinimumWidth(600)
+                self._options_frame.setMaximumWidth(16777215)
+                self._ensure_left_column_visible()
+                self.right_vsplit.hide()
+        except Exception as e:
+            safe_print(f"view mode: {e}")
 
     def _on_splitter_moved(self, pos=0, index=0):
         # Force all tab widgets to dynamically recalculate and repaint their tab bars
@@ -11856,6 +11945,12 @@ class MainWindow(QMainWindow):
         
         act_parts_viewer = menu.addAction("📑 تصفح الأجزاء المستخرجة")
         act_parts_viewer.triggered.connect(self._on_open_parts_viewer)
+
+        # ✅ إتاحة نفس نافذة الاختيار اليدوي الموجودة في تبويب إعادة الفحص
+        # من زر تخصيص في الشاشة الرئيسية، مع إبقاء المسار الأصلي كما هو.
+        act_manual_recheck = menu.addAction("🔬 اختيار يدوي لإعادة الفحص")
+        act_manual_recheck.setToolTip("اختيار أجزاء محددة لإعادة المقارنة أو إعادة الاستخراج")
+        act_manual_recheck.triggered.connect(self._on_manual_recheck)
 
         menu.addSeparator()
 
@@ -15197,16 +15292,37 @@ class MainWindow(QMainWindow):
         return True
 
     def _toggle_options_panel(self):
-        """✅ v29.9: زر الخيارات لا يُظهر المقارنة أبداً، وإظهار الخيارات يخفي المقارنة فقط."""
+        """تبديل الخيارات مع ضمان بقاء إحدى منطقتي العرض أو الخيارات ظاهرة دائماً."""
         try:
-            if bool(getattr(self, "_options_panel_visible", True)):
-                # إخفاء الخيارات فقط. لا تُظهر المقارنة تلقائياً.
-                self._set_options_view_visible(False, collapse=True)
+            options_visible = bool(getattr(self, "_options_panel_visible", True))
+            view_visible = bool(getattr(self, "right_vsplit", None) and self.right_vsplit.isVisible())
+
+            if options_visible:
+                # إذا كانت الخيارات في وضعها الكامل والعرض مخفياً، فإن إخفاء
+                # الخيارات يجب أن يحوّل مباشرة إلى العرض الكامل، لا إلى فراغ.
+                if not view_visible:
+                    self._set_options_view_visible(False, collapse=True)
+                    self.right_vsplit.show()
+                    self._options_frame.setMinimumWidth(80)
+                    if getattr(self, "view_mode_buttons", None):
+                        self.view_mode_buttons[1].setChecked(True)
+                else:
+                    self._set_options_view_visible(False, collapse=True)
+                    if getattr(self, "view_mode_buttons", None):
+                        self.view_mode_buttons[1].setChecked(True)
             else:
-                # إظهار الخيارات: أخفِ المقارنة لأنها تشغل نفس المكان.
+                # إظهار الخيارات يلغي شاشة المقارنة المضمّنة، ثم يعيد العمود
+                # إلى وضع تقسيم الشاشة مع بقاء العرض مرئياً.
                 self._hide_compare_panel_only()
                 self._set_options_view_visible(True, collapse=False)
                 self._ensure_left_column_visible()
+                if not view_visible:
+                    self.right_vsplit.show()
+                self._options_frame.setMinimumWidth(320)
+                self._options_frame.setMaximumWidth(16777215)
+                if getattr(self, "view_mode_buttons", None):
+                    self.view_mode_buttons[0].setChecked(True)
+
             try:
                 self.settings.set("options_panel_visible", bool(getattr(self, "_options_panel_visible", True)))
                 self.settings.save()
@@ -15879,15 +15995,20 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_show_compare_screen(self):
-        """✅ v29.9: زر المقارنة لا يُظهر الخيارات أبداً، وإظهار المقارنة يخفي الخيارات فقط."""
+        """عرض/إخفاء المقارنة دون السماح بترك العمودين مخفيين معاً."""
         try:
             if bool(getattr(self, "_embedded_compare_visible", False)):
-                # إخفاء المقارنة فقط. لا تُظهر الخيارات تلقائياً.
+                # عند إخفاء المقارنة بعد وضع الخيارات الكاملة، أعِد العرض
+                # تلقائياً كي لا تصبح النافذة فارغة.
                 self._hide_compare_panel_only()
+                if not self.right_vsplit.isVisible():
+                    self.right_vsplit.show()
+                    if getattr(self, "view_mode_buttons", None):
+                        self.view_mode_buttons[1].setChecked(True)
                 self._collapse_left_if_empty()
                 return
 
-            # إظهار المقارنة: أخفِ الخيارات لأنها تشغل نفس المكان.
+            # إظهار المقارنة: أخفِ الخيارات لأنها تشغل نفس العمود.
             self._set_options_view_visible(False, collapse=False)
             self._show_compare_panel_only(record_options_state=False)
         except Exception as e:
@@ -19630,7 +19751,7 @@ class InitialSplashScreen(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("PDF Master Pro")
         title_lbl.setObjectName("splashTitle")
-        sub_lbl = QLabel("الإصدار v9.5 — استوديو استخراج ومعالجة ومقارنة الكتب")
+        sub_lbl = QLabel("الإصدار v9.6 — استوديو استخراج ومعالجة ومقارنة الكتب")
         sub_lbl.setObjectName("splashSubTitle")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -19765,7 +19886,7 @@ def main():
 
         set_windows_app_user_model_id()
         app = QApplication(sys.argv)
-        app.setApplicationName("PDF Master Pro v9.5")
+        app.setApplicationName("PDF Master Pro v9.6")
         try:
             LOGGER.info("PDF_BACKEND=%s, PDF_SPLIT_AVAILABLE=%s | PyQt6 app started", PDF_BACKEND, PDF_SPLIT_AVAILABLE)
         except Exception:
@@ -19879,7 +20000,7 @@ def set_windows_app_user_model_id():
     try:
         if sys.platform == "win32":
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PDFMasterPro.v9.5.Personal")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PDFMasterPro.v9.6.Personal")
     except Exception:
         pass
 
