@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['PDF_Master_Pro_v10_0_11.py'],
+    ['PDF_Master_Pro_v10_22.py'],
     pathex=[],
     binaries=[],
     # ✅ إصلاح: أضف ملف الأيقونة هنا حتى يُنسخ بجانب الـ exe الناتج —
