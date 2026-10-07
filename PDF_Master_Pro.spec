@@ -1,14 +1,44 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['PDF_Master_Pro_v10_23.py'],          # 1) اسم الملف الجديد
+    ['PDF_Master_Pro_v10_23.py'],
     pathex=[],
     binaries=[],
     datas=[('extract_pdf.ico', '.')],
-    hiddenimports=['google.genai', 'pymupdf', 'fitz'],   # 2) pymupdf بدل pypdf
+    hiddenimports=['google.genai', 'pymupdf', 'fitz'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pikepdf', 'pypdf', 'PyPDF2', 'pdfrw'],    # 3) استبعاد المحركات الاحتياطية
+    excludes=['pikepdf', 'pypdf', 'PyPDF2', 'pdfrw'],
     noarchive=False,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='PDFMasterPro',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon='extract_pdf.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='PDFMasterPro',
 )
